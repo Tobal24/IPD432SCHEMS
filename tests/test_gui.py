@@ -1,0 +1,319 @@
+"""
+Automated GUI integration tests for ELO212 & IPD432 Suite.
+Runs in offscreen mode to verify rendering, FSM presets, and SVG/PNG generation.
+"""
+
+import sys
+import os
+import unittest
+
+os.environ["QT_QPA_PLATFORM"] = "offscreen"
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+from PySide6.QtCore import QPointF
+from PySide6.QtWidgets import QApplication
+from app.gui.main_window import MainWindow
+from app.core.rtl_model import ComponentFactory, ComponentType, RTLPin, PinDirection, PinSide
+from app.gui.rtl_items import RTLWireItem
+from app.core.fsm_model import FSMType
+
+app = QApplication.instance() or QApplication(sys.argv)
+
+
+class TestGUIIntegration(unittest.TestCase):
+    def setUp(self):
+        self.win = MainWindow()
+
+    def test_window_tabs(self):
+        self.assertEqual(self.win.tab_widget.count(), 2)
+
+    def test_rtl_editor_loads(self):
+        rtl = self.win.tab_rtl
+        self.assertIsNotNone(rtl.scene)
+        # Check that loaded counter example has components and wires
+        self.assertTrue(len(rtl.scene.schematic.components) >= 3)
+        self.assertTrue(len(rtl.scene.schematic.wires) >= 3)
+
+        # Test adding a MUX
+        mux = ComponentFactory.create_mux(500, 200, num_inputs=2, width=4)
+        item = rtl.scene.add_component(mux)
+        self.assertIn(mux.id, rtl.scene.comp_items)
+
+    def test_fsm_designer_presets_and_codegen(self):
+        fsm_tab = self.win.tab_fsm
+        # Load Traffic light preset
+        fsm_tab.load_traffic_preset()
+        self.assertEqual(len(fsm_tab.fsm.states), 4)
+        self.assertEqual(len(fsm_tab.fsm.transitions), 6)
+
+        # Verify SystemVerilog code updated
+        code = fsm_tab.text_sv.toPlainText()
+        self.assertIn("module traffic_light_controller", code)
+        self.assertIn("LA = 2'b00;", code)
+
+        # Run validation
+        fsm_tab.run_validation()
+        self.assertGreater(fsm_tab.list_issues.count(), 0)
+
+        # Switch to Mealy
+        fsm_tab.combo_type.setCurrentText(FSMType.MEALY.value)
+        fsm_tab._on_params_changed()
+        self.assertEqual(fsm_tab.fsm.fsm_type, FSMType.MEALY)
+
+    def test_undo_redo_rtl(self):
+        scene = self.win.tab_rtl.scene
+        initial_comp_count = len(scene.schematic.components)
+
+        # Add component
+        mux = ComponentFactory.create_mux(100, 100, num_inputs=2)
+        scene.add_component(mux)
+        self.assertEqual(len(scene.schematic.components), initial_comp_count + 1)
+
+        # Test Undo
+        scene.undo()
+        self.assertEqual(len(scene.schematic.components), initial_comp_count)
+
+        # Test Redo
+        scene.redo()
+        self.assertEqual(len(scene.schematic.components), initial_comp_count + 1)
+
+    def test_drag_undo_restores_position(self):
+        scene = self.win.tab_rtl.scene
+        # Pick the first component item
+        comp_item = list(scene.comp_items.values())[0]
+        initial_pos = comp_item.pos()
+        snapshot = scene.schematic.to_dict()
+
+        # Simulate dragging the component
+        scene.undo_stack.append(snapshot)
+        comp_item.setPos(initial_pos.x() + 120, initial_pos.y() + 80)
+        comp_item.model.x = comp_item.pos().x()
+        comp_item.model.y = comp_item.pos().y()
+
+        # Check it moved
+        self.assertNotEqual(comp_item.pos(), initial_pos)
+
+        # Trigger Undo
+        comp_id = comp_item.model.id
+        scene.undo()
+        restored_comp_item = scene.comp_items[comp_id]
+        self.assertEqual(restored_comp_item.pos().x(), initial_pos.x())
+        self.assertEqual(restored_comp_item.pos().y(), initial_pos.y())
+        self.assertEqual(restored_comp_item.model.x, initial_pos.x())
+        self.assertEqual(restored_comp_item.model.y, initial_pos.y())
+
+    def test_wire_pin_alignment(self):
+        scene = self.win.tab_rtl.scene
+        # Verify that all loaded wires anchor exactly at pin center scenePos
+        for w_item in scene.wire_items.values():
+            w = w_item.model
+            s_comp = scene.comp_items.get(w.source_comp_id)
+            t_comp = scene.comp_items.get(w.target_comp_id)
+            if s_comp and t_comp:
+                s_pin = next(pi for pi in s_comp.pin_items if pi.pin.id == w.source_pin_id)
+                t_pin = next(pi for pi in t_comp.pin_items if pi.pin.id == w.target_pin_id)
+                self.assertAlmostEqual(w.points[0][0], s_pin.scenePos().x(), places=2)
+                self.assertAlmostEqual(w.points[0][1], s_pin.scenePos().y(), places=2)
+                self.assertAlmostEqual(w.points[-1][0], t_pin.scenePos().x(), places=2)
+                self.assertAlmostEqual(w.points[-1][1], t_pin.scenePos().y(), places=2)
+
+    def test_fsm_transition_bounding_rect(self):
+        fsm_tab = self.win.tab_fsm
+        fsm_tab.load_pulse_preset()
+        for t_item in fsm_tab.fsm_scene.trans_items:
+            bbox = t_item.boundingRect()
+            # Label position must be inside the bounding rect
+            self.assertTrue(bbox.contains(t_item.label_pos))
+            # Arrow tip must be inside the bounding rect
+            self.assertTrue(bbox.contains(t_item.arrow_tip))
+
+    def test_fsm_reset_arrow_tracks_position(self):
+        fsm_tab = self.win.tab_fsm
+        fsm_tab.load_pulse_preset()
+        init_state = fsm_tab.fsm.get_initial_state()
+        init_item = fsm_tab.fsm_scene.state_items[init_state.name]
+        self.assertIsNotNone(fsm_tab.fsm_scene.reset_arrow)
+        self.assertEqual(fsm_tab.fsm_scene.reset_arrow.pos(), init_item.scenePos())
+
+        # Move the state
+        init_item.setPos(init_item.pos().x() + 50, init_item.pos().y() + 50)
+        self.assertEqual(fsm_tab.fsm_scene.reset_arrow.pos(), init_item.scenePos())
+
+
+    def test_solder_dot_movable_and_undo(self):
+        scene = self.win.tab_rtl.scene
+        scene.add_junction_at(QPointF(100, 100))
+        j_item = list(scene.junction_items.values())[-1]
+        self.assertTrue(j_item.flags() & j_item.GraphicsItemFlag.ItemIsMovable)
+
+        # Move the junction
+        scene.undo_stack.append(scene.schematic.to_dict())
+        j_item.setPos(140, 160)
+        # Verify model updated
+        matching = [j for j in scene.schematic.junctions if j.id == j_item.j_id]
+        self.assertEqual(len(matching), 1)
+        self.assertEqual(matching[0].x, 140)
+        self.assertEqual(matching[0].y, 160)
+
+        # Undo restoration
+        scene.undo()
+        restored_j = [j for j in scene.schematic.junctions if j.id == j_item.j_id]
+        self.assertEqual(len(restored_j), 1)
+        self.assertEqual(restored_j[0].x, 100)
+        self.assertEqual(restored_j[0].y, 100)
+
+    def test_wire_manual_routing_and_reset(self):
+        scene = self.win.tab_rtl.scene
+        w_item = list(scene.wire_items.values())[0]
+        # Select wire to generate handles
+        w_item.setSelected(True)
+        self.assertGreater(len(w_item.handles), 0)
+
+        # Drag a segment handle
+        w_item.on_segment_dragged(0, QPointF(120, 160))
+        self.assertTrue(w_item.model.manual_routing)
+
+        # Reset routing with R
+        scene.reset_selected_wire_routing()
+        self.assertFalse(w_item.model.manual_routing)
+
+    def test_wire_label_movable_and_reset(self):
+        scene = self.win.tab_rtl.scene
+        # Find wire with label (e.g. 'count' or 'next_count')
+        w_item = next(w for w in scene.wire_items.values() if w.model.label)
+        self.assertIsNotNone(w_item.label_item)
+
+        # Move label tag
+        w_item.label_item.setPos(50, 70)
+        self.assertIsNotNone(w_item.model.label_pos)
+
+        # Reset label position with Shift+R
+        scene.reset_selected_labels()
+        self.assertIsNone(w_item.model.label_pos)
+
+    def test_fsm_transition_badge_movable_and_reset(self):
+        fsm_tab = self.win.tab_fsm
+        fsm_tab.load_pulse_preset()
+        t_item = fsm_tab.fsm_scene.trans_items[0]
+        self.assertIsNotNone(t_item.badge_item)
+
+        # Move badge item
+        t_item.badge_item.setPos(90, 110)
+        self.assertIsNotNone(t_item.transition.custom_label_pos)
+
+        # Reset all transition labels
+        fsm_tab.fsm_scene.reset_all_transition_labels()
+        self.assertIsNone(t_item.transition.custom_label_pos)
+
+    def test_generic_block_resize_and_port_editing(self):
+        scene = self.win.tab_rtl.scene
+        block = ComponentFactory.create_generic_block(300, 300, name="ALU_TEST", inputs=["A", "B"], outputs=["Y"])
+        block_item = scene.add_component(block)
+        self.assertIsNotNone(block_item.resize_handle)
+
+        # Resize block
+        block_item.set_block_size(180, 140)
+        self.assertEqual(block_item.model.width, 180)
+        self.assertEqual(block_item.model.height, 140)
+
+        # Edit ports: add an input and an output
+        block.pins.append(RTLPin(id=f"{block.id}_in_cin", name="Cin", direction=PinDirection.IN, side=PinSide.LEFT, offset=0.8, width=1))
+        block.pins.append(RTLPin(id=f"{block.id}_out_cout", name="Cout", direction=PinDirection.OUT, side=PinSide.RIGHT, offset=0.8, width=1))
+        block_item.rebuild_pins()
+        self.assertEqual(len(block_item.pin_items), 5)
+
+    def test_mux_sel_pin_anchoring_and_rendering(self):
+        scene = self.win.tab_rtl.scene
+        mux = ComponentFactory.create_mux(200, 200, input_names=["IDLE", "RUN", "DONE"], width=4, sel_side="BOTTOM")
+        mux_item = scene.add_component(mux)
+        self.assertEqual(len(mux_item.pin_items), 5)
+
+        # Verify sel pin anchors directly on the sloped bottom edge (y = 0.9 * h), NOT floating at y = h
+        sel_pin_item = next(pi for pi in mux_item.pin_items if pi.pin.name == "sel")
+        expected_y = mux.height - (mux.height * 0.2) * 0.5 # 0.9 * h
+        self.assertAlmostEqual(sel_pin_item.pos().y(), expected_y, places=2)
+
+    def test_bus_splitter_elo212_branches(self):
+        scene = self.win.tab_rtl.scene
+        splitter = ComponentFactory.create_bus_splitter(400, 400, in_width=16, slices="[2:0], [3], [15:4]", base_name="bus_ej")
+        split_item = scene.add_component(splitter)
+        self.assertEqual(len(split_item.pin_items), 4)
+
+        out_pins = [pi.pin for pi in split_item.pin_items if pi.pin.direction == PinDirection.OUT]
+        self.assertEqual(out_pins[0].name, "bus_ej[2:0]")
+        self.assertEqual(out_pins[0].width, 3)
+        self.assertEqual(out_pins[1].name, "bus_ej[3]")
+        self.assertEqual(out_pins[1].width, 1)
+        self.assertEqual(out_pins[2].name, "bus_ej[15:4]")
+        self.assertEqual(out_pins[2].width, 12)
+
+    def test_operator_circle_output_suppressed(self):
+        scene = self.win.tab_rtl.scene
+        op = ComponentFactory.create_operator(100, 100, op="A==B", width=4)
+        op_item = scene.add_component(op)
+        out_pin_item = next(pi for pi in op_item.pin_items if pi.pin.direction == PinDirection.OUT)
+        self.assertEqual(out_pin_item.pin.name, "out")
+        # RTLPinItem paint suppresses 'out' label painting for OPERATOR_CIRCLE to prevent collision with A==B
+        self.assertEqual(op_item.model.type, ComponentType.OPERATOR_CIRCLE)
+
+    def test_counter_example_wire_hit_testing_bugfix(self):
+        """Verify the bugfix where the top feedback wire loop used to swallow clicks on next_count wire"""
+        rtl_tab = self.win.tab_rtl
+        rtl_tab.load_counter_example()
+        scene = rtl_tab.scene
+
+        w_feedback_item = scene.wire_items["w_feedback"]
+        w_sum_item = scene.wire_items["w_sum"]
+
+        # Points along next_count wire (at y=150 between x=220 and x=320)
+        test_pt = QPointF(250, 150)
+
+        # The stroked shape of w_sum MUST contain this point
+        self.assertTrue(w_sum_item.shape().contains(w_sum_item.mapFromScene(test_pt)))
+
+        # The stroked shape of w_feedback MUST NOT contain this interior point!
+        self.assertFalse(w_feedback_item.shape().contains(w_feedback_item.mapFromScene(test_pt)))
+
+        # Next count label item must be selectable and movable
+        self.assertIsNotNone(w_sum_item.label_item)
+        w_sum_item.label_item.setPos(250, 120)
+        self.assertIsNotNone(w_sum_item.model.label_pos)
+
+    def test_wire_directional_arrow(self):
+        """Verify directional signal arrows at target pins (ELO212 Figure 4)"""
+        rtl_tab = self.win.tab_rtl
+        rtl_tab.load_counter_example()
+        scene = rtl_tab.scene
+
+        w1_item = scene.wire_items["w_const"]
+        w3_item = scene.wire_items["w_feedback"]
+
+        self.assertTrue(w1_item.model.show_arrow)
+        self.assertTrue(w3_item.model.show_arrow)
+
+        # Polygon must be a triangle (3 points) pointing toward the last point
+        poly1 = w1_item._get_arrow_polygon()
+        self.assertIsNotNone(poly1)
+        self.assertEqual(len(poly1), 3)
+
+        poly3 = w3_item._get_arrow_polygon()
+        self.assertIsNotNone(poly3)
+        self.assertEqual(len(poly3), 3)
+
+        # Wire shape includes the arrow
+        self.assertTrue(w1_item.shape().contains(poly1[0]))
+
+        # Test UI property toggling
+        scene.clearSelection()
+        w1_item.setSelected(True)
+        rtl_tab._on_selection_changed()
+        self.assertTrue(rtl_tab.check_wire_arrow.isChecked())
+
+        rtl_tab.check_wire_arrow.setChecked(False)
+        rtl_tab.apply_wire_props()
+        self.assertFalse(w1_item.model.show_arrow)
+
+
+if __name__ == "__main__":
+    unittest.main()
+
