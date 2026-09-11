@@ -16,7 +16,7 @@ from typing import List, Optional, Tuple
 from PySide6.QtCore import Qt, QRectF, QPointF, QLineF
 from PySide6.QtGui import (
     QPainter, QPen, QBrush, QColor, QFont, QPainterPath, QPolygonF, QFontMetrics,
-    QPainterPathStroker
+    QPainterPathStroker, QTransform
 )
 from PySide6.QtWidgets import (
     QGraphicsItem, QGraphicsPathItem, QGraphicsEllipseItem,
@@ -53,26 +53,39 @@ class RTLPinItem(QGraphicsItem):
         off = self.pin.offset
         ctype = self.parent_comp.model.type
 
+        is_mirrored = getattr(self.parent_comp.model, "mirrored", False)
         if ctype == ComponentType.MUX:
-            if side == PinSide.LEFT:
-                pos = QPointF(0, h * off)
-            elif side == PinSide.RIGHT:
-                pos = QPointF(w, h * 0.2 + (h * 0.6) * off)
-            elif side == PinSide.TOP:
-                y_edge = (h * 0.2) * off
-                pos = QPointF(w * off, y_edge)
-            else: # BOTTOM
-                y_edge = h - (h * 0.2) * off
-                pos = QPointF(w * off, y_edge)
+            if not is_mirrored:
+                if side == PinSide.LEFT:
+                    pos = QPointF(0, snap(h * off))
+                elif side == PinSide.RIGHT:
+                    pos = QPointF(w, snap(h * 0.2 + (h * 0.6) * off))
+                elif side == PinSide.TOP:
+                    y_edge = (h * 0.2) * off
+                    pos = QPointF(snap(w * off), y_edge)
+                else: # BOTTOM
+                    y_edge = h - (h * 0.2) * off
+                    pos = QPointF(snap(w * off), y_edge)
+            else:
+                if side == PinSide.LEFT:
+                    pos = QPointF(0, snap(h * 0.2 + (h * 0.6) * off))
+                elif side == PinSide.RIGHT:
+                    pos = QPointF(w, snap(h * off))
+                elif side == PinSide.TOP:
+                    y_edge = (h * 0.2) * (1.0 - off)
+                    pos = QPointF(snap(w * off), y_edge)
+                else: # BOTTOM
+                    y_edge = h - (h * 0.2) * (1.0 - off)
+                    pos = QPointF(snap(w * off), y_edge)
         else:
             if side == PinSide.LEFT:
-                pos = QPointF(0, h * off)
+                pos = QPointF(0, snap(h * off))
             elif side == PinSide.RIGHT:
-                pos = QPointF(w, h * off)
+                pos = QPointF(w, snap(h * off))
             elif side == PinSide.TOP:
-                pos = QPointF(w * off, 0)
+                pos = QPointF(snap(w * off), 0)
             else: # BOTTOM
-                pos = QPointF(w * off, h)
+                pos = QPointF(snap(w * off), h)
 
         self.setPos(pos)
 
@@ -96,11 +109,11 @@ class RTLPinItem(QGraphicsItem):
 
         ctype = self.parent_comp.model.type
         # Suppress redundant output labels that cause visual clutter / collision
-        if ctype == ComponentType.OPERATOR_CIRCLE and self.pin.side == PinSide.RIGHT:
+        if ctype == ComponentType.OPERATOR_CIRCLE and self.pin.direction == PinDirection.OUT:
             return
         if ctype == ComponentType.BUS_SPLITTER and self.pin.direction == PinDirection.OUT:
             return
-        if ctype == ComponentType.MUX and self.pin.side == PinSide.RIGHT and self.pin.name == "out":
+        if ctype == ComponentType.MUX and self.pin.direction == PinDirection.OUT and self.pin.name == "out":
             return
 
         # Draw pin label
@@ -117,7 +130,10 @@ class RTLPinItem(QGraphicsItem):
             else:
                 painter.drawText(QRectF(6, -8, tw + 4, 16), Qt.AlignLeft | Qt.AlignVCenter, name)
         elif self.pin.side == PinSide.RIGHT:
-            painter.drawText(QRectF(-tw - 6, -8, tw + 4, 16), Qt.AlignRight | Qt.AlignVCenter, name)
+            if ctype == ComponentType.BUS_SPLITTER and self.pin.direction == PinDirection.IN:
+                painter.drawText(QRectF(8, -16, tw + 4, 14), Qt.AlignLeft | Qt.AlignVCenter, name)
+            else:
+                painter.drawText(QRectF(-tw - 6, -8, tw + 4, 16), Qt.AlignRight | Qt.AlignVCenter, name)
         elif self.pin.side == PinSide.TOP:
             y_off = 6 if ctype == ComponentType.MUX else -18
             painter.drawText(QRectF(-25, y_off, 50, 14), Qt.AlignCenter, name)
@@ -272,6 +288,9 @@ class RTLComponentItem(QGraphicsItem):
                     elif self.model.type == ComponentType.BUS_SPLITTER and hasattr(p, "open_splitter_dialog"):
                         p.open_splitter_dialog(self)
                         return
+                    elif self.model.type == ComponentType.OPERATOR_CIRCLE and hasattr(p, "open_operator_dialog"):
+                        p.open_operator_dialog(self)
+                        return
                     p = p.parent()
         super().mouseDoubleClickEvent(event)
 
@@ -342,13 +361,22 @@ class RTLComponentItem(QGraphicsItem):
             self._paint_generic_block(painter, w, h)
 
     def _paint_mux(self, painter: QPainter, w: float, h: float):
-        # Trapezoid: wide edge on left (0 to h), narrow edge on right (h*0.2 to h*0.8)
-        poly = QPolygonF([
-            QPointF(0, 0),
-            QPointF(w, h * 0.2),
-            QPointF(w, h * 0.8),
-            QPointF(0, h)
-        ])
+        if getattr(self.model, "mirrored", False):
+            # Mirrored: narrow on left, wide on right
+            poly = QPolygonF([
+                QPointF(0, h * 0.2),
+                QPointF(w, 0),
+                QPointF(w, h),
+                QPointF(0, h * 0.8)
+            ])
+        else:
+            # Trapezoid: wide edge on left (0 to h), narrow edge on right (h*0.2 to h*0.8)
+            poly = QPolygonF([
+                QPointF(0, 0),
+                QPointF(w, h * 0.2),
+                QPointF(w, h * 0.8),
+                QPointF(0, h)
+            ])
         painter.drawPolygon(poly)
 
     def _paint_register(self, painter: QPainter, w: float, h: float):
@@ -385,6 +413,12 @@ class RTLComponentItem(QGraphicsItem):
         painter.drawText(QRectF(0, 0, w, h), Qt.AlignCenter, lbl)
 
     def _paint_gate(self, painter: QPainter, w: float, h: float, ctype: ComponentType):
+        is_mirrored = getattr(self.model, "mirrored", False)
+        if is_mirrored:
+            painter.save()
+            t = QTransform().translate(w, 0).scale(-1, 1)
+            painter.setTransform(t * painter.transform())
+
         path = QPainterPath()
         if ctype == ComponentType.GATE_AND:
             path.moveTo(0, 0)
@@ -421,14 +455,12 @@ class RTLComponentItem(QGraphicsItem):
             path.quadTo(w * 0.6, h * 0.05, 0, 0)
             painter.drawPath(path)
 
+        if is_mirrored:
+            painter.restore()
+
     def _paint_bus_splitter(self, painter: QPainter, w: float, h: float):
-        # Canonical ELO212 Bus Splitter (Reference Image 3):
-        # 1. Incoming horizontal wire from input pin (x=0) to spine (x=spine_x)
-        # 2. Thick vertical bar (spine) at x=spine_x
-        # 3. Horizontal branch lines from spine to each output pin (x=w)
-        # 4. Above each branch: slice name (e.g. bus_ej[2:0], [3], [15:4])
-        # 5. On multi-bit branches: 45° bus slash with bit-width number (e.g. / 3, / 12)
-        spine_x = 24.0
+        is_mirrored = getattr(self.model, "mirrored", False)
+        spine_x = (w - 24.0) if is_mirrored else 24.0
         out_pins = [p for p in self.model.pins if p.direction == PinDirection.OUT]
         in_pin = next((p for p in self.model.pins if p.direction == PinDirection.IN), None)
 
@@ -444,14 +476,20 @@ class RTLComponentItem(QGraphicsItem):
 
         # Draw input wire
         painter.setPen(QPen(QColor(30, 30, 30), 1.8))
-        painter.drawLine(QLineF(0, in_y, spine_x, in_y))
-
-        # Input bus slash if multi-bit
-        if in_pin and in_pin.width > 1:
-            ix = spine_x * 0.45
-            painter.drawLine(QLineF(ix - 4, in_y + 6, ix + 4, in_y - 6))
-            painter.setFont(QFont("Segoe UI", 7, QFont.Bold))
-            painter.drawText(QRectF(ix - 2, in_y + 1, 24, 12), Qt.AlignLeft, str(in_pin.width))
+        if is_mirrored:
+            painter.drawLine(QLineF(w, in_y, spine_x, in_y))
+            if in_pin and in_pin.width > 1:
+                ix = w - (w - spine_x) * 0.45
+                painter.drawLine(QLineF(ix - 4, in_y + 6, ix + 4, in_y - 6))
+                painter.setFont(QFont("Segoe UI", 7, QFont.Bold))
+                painter.drawText(QRectF(ix - 2, in_y + 1, 24, 12), Qt.AlignLeft, str(in_pin.width))
+        else:
+            painter.drawLine(QLineF(0, in_y, spine_x, in_y))
+            if in_pin and in_pin.width > 1:
+                ix = spine_x * 0.45
+                painter.drawLine(QLineF(ix - 4, in_y + 6, ix + 4, in_y - 6))
+                painter.setFont(QFont("Segoe UI", 7, QFont.Bold))
+                painter.drawText(QRectF(ix - 2, in_y + 1, 24, 12), Qt.AlignLeft, str(in_pin.width))
 
         # Draw thick vertical spine bar
         spine_w = 5.0
@@ -463,20 +501,28 @@ class RTLComponentItem(QGraphicsItem):
         for pin in out_pins:
             py = h * pin.offset
             painter.setPen(QPen(QColor(30, 30, 30), 1.8))
-            painter.drawLine(QLineF(spine_x, py, w, py))
-
-            # Slice label above branch line
-            painter.setFont(QFont("Consolas", 8, QFont.Bold))
-            painter.setPen(QPen(QColor(20, 20, 20)))
-            painter.drawText(QRectF(spine_x + 8, py - 16, w - spine_x - 10, 14), Qt.AlignLeft | Qt.AlignVCenter, pin.name)
-
-            # Bus slash if multi-bit
-            if pin.width > 1:
-                sx = spine_x + 18.0
-                painter.setPen(QPen(QColor(30, 30, 30), 1.5))
-                painter.drawLine(QLineF(sx - 4, py + 6, sx + 4, py - 6))
-                painter.setFont(QFont("Segoe UI", 7, QFont.Bold))
-                painter.drawText(QRectF(sx - 1, py + 1, 22, 12), Qt.AlignLeft, str(pin.width))
+            if is_mirrored:
+                painter.drawLine(QLineF(spine_x, py, 0, py))
+                painter.setFont(QFont("Consolas", 8, QFont.Bold))
+                painter.setPen(QPen(QColor(20, 20, 20)))
+                painter.drawText(QRectF(8, py - 16, spine_x - 12, 14), Qt.AlignLeft | Qt.AlignVCenter, pin.name)
+                if pin.width > 1:
+                    sx = spine_x - 18.0
+                    painter.setPen(QPen(QColor(30, 30, 30), 1.5))
+                    painter.drawLine(QLineF(sx - 4, py + 6, sx + 4, py - 6))
+                    painter.setFont(QFont("Segoe UI", 7, QFont.Bold))
+                    painter.drawText(QRectF(sx - 12, py + 1, 22, 12), Qt.AlignLeft, str(pin.width))
+            else:
+                painter.drawLine(QLineF(spine_x, py, w, py))
+                painter.setFont(QFont("Consolas", 8, QFont.Bold))
+                painter.setPen(QPen(QColor(20, 20, 20)))
+                painter.drawText(QRectF(spine_x + 8, py - 16, w - spine_x - 10, 14), Qt.AlignLeft | Qt.AlignVCenter, pin.name)
+                if pin.width > 1:
+                    sx = spine_x + 18.0
+                    painter.setPen(QPen(QColor(30, 30, 30), 1.5))
+                    painter.drawLine(QLineF(sx - 4, py + 6, sx + 4, py - 6))
+                    painter.setFont(QFont("Segoe UI", 7, QFont.Bold))
+                    painter.drawText(QRectF(sx - 1, py + 1, 22, 12), Qt.AlignLeft, str(pin.width))
 
     def _paint_constant(self, painter: QPainter, w: float, h: float):
         painter.setBrush(QBrush(QColor(245, 245, 245)))
@@ -684,8 +730,8 @@ class RTLWireItem(QGraphicsItem):
             return QPointF(0, 0)
         pts = [QPointF(p[0], p[1]) for p in self.model.points]
         p1, p2 = self._get_longest_segment(pts)
-        has_slash = (self.model.width > 1 and self.model.show_slash)
-        t_label = 0.65 if has_slash else 0.50
+        has_slash = ((self.model.width > 1 or self.model.width_param) and self.model.show_slash)
+        t_label = 0.72 if has_slash else 0.50
         mid = p1 + (p2 - p1) * t_label
         return mid
 
@@ -846,7 +892,7 @@ class RTLWireItem(QGraphicsItem):
             return QRectF()
         xs = [p[0] for p in self.model.points]
         ys = [p[1] for p in self.model.points]
-        pad = 45.0
+        pad = 65.0
         return QRectF(min(xs) - pad, min(ys) - pad, max(xs) - min(xs) + 2 * pad, max(ys) - min(ys) + 2 * pad)
 
     def paint(self, painter: QPainter, option, widget=None):
@@ -862,8 +908,8 @@ class RTLWireItem(QGraphicsItem):
         for i in range(len(pts) - 1):
             painter.drawLine(pts[i], pts[i + 1])
 
-        # Draw diagonal slash '/N' for buses (ELO212 Figure 1b)
-        if self.model.width > 1 and self.model.show_slash:
+        # Draw diagonal slash '/N' or '/PARAM' for buses (ELO212 Figure 1b)
+        if (self.model.width > 1 or self.model.width_param) and self.model.show_slash:
             self._paint_bus_slash(painter, pts)
 
         # Draw directional arrow at target (ELO212 Figure 4)
@@ -888,7 +934,7 @@ class RTLWireItem(QGraphicsItem):
 
     def _paint_bus_slash(self, painter: QPainter, pts: List[QPointF]):
         p1, p2 = self._get_longest_segment(pts)
-        t_slash = 0.25 if self.model.label.strip() else 0.50
+        t_slash = 0.16 if self.model.label.strip() else 0.50
         mid = p1 + (p2 - p1) * t_slash
         is_horiz = abs(p2.x() - p1.x()) >= abs(p2.y() - p1.y())
 
@@ -896,27 +942,32 @@ class RTLWireItem(QGraphicsItem):
         slash_pen = QPen(QColor(30, 30, 30), 1.6)
         painter.setPen(slash_pen)
 
+        slash_text = self.model.width_param if self.model.width_param else str(self.model.width)
+        font = QFont("Segoe UI", 9, QFont.Bold)
+        painter.setFont(font)
+        fm = painter.fontMetrics()
+        tw = fm.horizontalAdvance(slash_text)
+        box_w = max(28.0, float(tw + 6))
+
         if is_horiz:
             painter.drawLine(
                 QPointF(mid.x() - slash_len, mid.y() + slash_len),
                 QPointF(mid.x() + slash_len, mid.y() - slash_len)
             )
-            painter.setFont(QFont("Segoe UI", 9, QFont.Bold))
             painter.drawText(
-                QRectF(mid.x() + slash_len + 3, mid.y() - slash_len - 8, 28, 16),
-                Qt.AlignLeft | Qt.AlignVCenter,
-                str(self.model.width)
+                QRectF(mid.x() - box_w / 2, mid.y() - slash_len - 14, box_w, 14),
+                Qt.AlignCenter,
+                slash_text
             )
         else:
             painter.drawLine(
                 QPointF(mid.x() - slash_len, mid.y() - slash_len),
                 QPointF(mid.x() + slash_len, mid.y() + slash_len)
             )
-            painter.setFont(QFont("Segoe UI", 9, QFont.Bold))
             painter.drawText(
-                QRectF(mid.x() + slash_len + 3, mid.y() - 8, 28, 16),
+                QRectF(mid.x() + slash_len + 3, mid.y() - 8, box_w, 16),
                 Qt.AlignLeft | Qt.AlignVCenter,
-                str(self.model.width)
+                slash_text
             )
 
 

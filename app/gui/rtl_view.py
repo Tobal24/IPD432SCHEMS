@@ -5,6 +5,7 @@ and quick example loading.
 """
 
 import json
+import re
 from typing import Optional, List, Tuple
 from PySide6.QtCore import Qt, QPointF
 from PySide6.QtGui import QFont, QColor
@@ -365,6 +366,312 @@ class SplitterPropertiesDialog(QDialog):
             txt = "\n".join(lines) + f"\n\nTotal acumulado: {total_w} bits | {status}"
             self.lbl_preview.setText(txt)
 
+class OperatorPropertiesDialog(QDialog):
+    """Configuration dialog for Circular Operators: arithmetic, logic, reduction, unary, relational."""
+
+    OPERATIONS = [
+        ("Aritméticas (Binarias)", [
+            ("Suma (+)", "+", False, False, False),
+            ("Resta (-)", "-", False, False, False),
+            ("Multiplicación (*)", "*", False, False, False),
+            ("División (/)", "/", False, False, False),
+            ("Módulo (%)", "%", False, False, False),
+        ]),
+        ("Lógicas / Bit a bit (Binarias)", [
+            ("AND a nivel de bits (&)", "&", False, False, False),
+            ("OR a nivel de bits (|)", "|", False, False, False),
+            ("XOR a nivel de bits (^)", "^", False, False, False),
+            ("XNOR a nivel de bits (~^)", "~^", False, False, False),
+            ("Desplazamiento a la izquierda (<<)", "<<", False, False, False),
+            ("Desplazamiento a la derecha (>>)", ">>", False, False, False),
+        ]),
+        ("Reducción (Vector -> 1 bit)", [
+            ("Reducción AND (&)", "&", True, False, True),
+            ("Reducción OR (|)", "|", True, False, True),
+            ("Reducción XOR (^)", "^", True, False, True),
+            ("Reducción NAND (~&)", "~&", True, False, True),
+            ("Reducción NOR (~|)", "~|", True, False, True),
+            ("Reducción XNOR (~^)", "~^", True, False, True),
+        ]),
+        ("Unarias / Inversión (1 entrada)", [
+            ("Inversión bit a bit (~)", "~", False, True, False),
+            ("Negación aritmética (-)", "-", False, True, False),
+        ]),
+        ("Relacionales / Comparación (Salida 1 bit)", [
+            ("Igualdad (==)", "==", False, False, True),
+            ("Desigualdad (!=)", "!=", False, False, True),
+            ("Mayor que (>)", ">", False, False, True),
+            ("Mayor o igual que (>=)", ">=", False, False, True),
+            ("Menor que (<)", "<", False, False, True),
+            ("Menor o igual que (<=)", "<=", False, False, True),
+        ]),
+    ]
+
+    def __init__(self, comp: RTLComponent, parent=None):
+        super().__init__(parent)
+        self.comp = comp
+        self.setWindowTitle(f"Configurar Operador Circular: {comp.label}")
+        self.resize(460, 420)
+        self._init_ui()
+
+    def _init_ui(self):
+        layout = QVBoxLayout(self)
+
+        box = QGroupBox("Propiedades del Operador")
+        form = QFormLayout(box)
+
+        # Category combo
+        self.combo_category = QComboBox()
+        for cat, _ in self.OPERATIONS:
+            self.combo_category.addItem(cat)
+        self.combo_category.currentIndexChanged.connect(self._on_category_changed)
+
+        # Operation combo
+        self.combo_op = QComboBox()
+        self.combo_op.currentIndexChanged.connect(self._on_op_changed)
+
+        # Bus width
+        cur_w = int(self.comp.properties.get("bus_width", "4"))
+        self.spin_width = QSpinBox()
+        self.spin_width.setRange(1, 128)
+        self.spin_width.setValue(cur_w)
+        self.spin_width.valueChanged.connect(self._update_preview)
+
+        # Custom label
+        self.edit_label = QLineEdit(self.comp.label)
+        self.edit_label.setPlaceholderText("Dejar en blanco para usar símbolo de operación")
+        self.edit_label.textChanged.connect(self._update_preview)
+
+        form.addRow("Categoría:", self.combo_category)
+        form.addRow("Operación:", self.combo_op)
+        form.addRow("Ancho de bus (bits):", self.spin_width)
+        form.addRow("Etiqueta en círculo:", self.edit_label)
+        layout.addWidget(box)
+
+        # Info / Preview Box
+        layout.addWidget(QLabel("Detalles y puertos del operador:"))
+        self.lbl_preview = QLabel()
+        self.lbl_preview.setStyleSheet("background: #f8f9fa; border: 1px solid #dcdfe6; padding: 10px; border-radius: 4px; font-family: Consolas;")
+        layout.addWidget(self.lbl_preview)
+
+        # Buttons
+        btn_box = QHBoxLayout()
+        btn_ok = QPushButton("Aplicar Cambios")
+        btn_ok.setStyleSheet("font-weight: bold; background: #0066cc; color: white; padding: 6px;")
+        btn_cancel = QPushButton("Cancelar")
+        btn_ok.clicked.connect(self.accept)
+        btn_cancel.clicked.connect(self.reject)
+        btn_box.addStretch()
+        btn_box.addWidget(btn_cancel)
+        btn_box.addWidget(btn_ok)
+        layout.addLayout(btn_box)
+
+        self._select_current_op()
+        self._update_preview()
+
+    def _select_current_op(self):
+        cur_op = self.comp.properties.get("op", self.comp.label)
+        is_red = self.comp.properties.get("is_reduction", "False") == "True"
+        is_unary = self.comp.properties.get("is_unary", "False") == "True"
+
+        matched_cat_idx = 0
+        matched_op_idx = 0
+        found = False
+
+        for c_idx, (cat, ops) in enumerate(self.OPERATIONS):
+            for o_idx, (dname, sym, red, un, out1) in enumerate(ops):
+                if sym == cur_op and red == is_red and un == is_unary:
+                    matched_cat_idx = c_idx
+                    matched_op_idx = o_idx
+                    found = True
+                    break
+                elif not found and sym == cur_op:
+                    matched_cat_idx = c_idx
+                    matched_op_idx = o_idx
+            if found:
+                break
+
+        self.combo_category.setCurrentIndex(matched_cat_idx)
+        self._populate_ops_for_cat(matched_cat_idx)
+        self.combo_op.setCurrentIndex(matched_op_idx)
+
+    def _on_category_changed(self, idx: int):
+        self._populate_ops_for_cat(idx)
+        self._update_preview()
+
+    def _populate_ops_for_cat(self, cat_idx: int):
+        self.combo_op.blockSignals(True)
+        self.combo_op.clear()
+        if 0 <= cat_idx < len(self.OPERATIONS):
+            _, ops = self.OPERATIONS[cat_idx]
+            for dname, _, _, _, _ in ops:
+                self.combo_op.addItem(dname)
+        self.combo_op.blockSignals(False)
+
+    def _on_op_changed(self, idx: int):
+        cat_idx = self.combo_category.currentIndex()
+        if 0 <= cat_idx < len(self.OPERATIONS):
+            _, ops = self.OPERATIONS[cat_idx]
+            if 0 <= idx < len(ops):
+                _, sym, _, _, _ = ops[idx]
+                if not self.edit_label.text() or self.edit_label.text() in [o[1] for c in self.OPERATIONS for o in c[1]]:
+                    self.edit_label.setText(sym)
+        self._update_preview()
+
+    def get_selected_op_info(self) -> Tuple[str, bool, bool, bool]:
+        cat_idx = self.combo_category.currentIndex()
+        op_idx = self.combo_op.currentIndex()
+        if 0 <= cat_idx < len(self.OPERATIONS):
+            _, ops = self.OPERATIONS[cat_idx]
+            if 0 <= op_idx < len(ops):
+                _, sym, is_red, is_unary, out_1bit = ops[op_idx]
+                return sym, is_red, is_unary, out_1bit
+        return "+", False, False, False
+
+    def get_width(self) -> int:
+        return self.spin_width.value()
+
+    def get_label(self) -> str:
+        txt = self.edit_label.text().strip()
+        if txt:
+            return txt
+        sym, _, _, _ = self.get_selected_op_info()
+        return sym
+
+    def _update_preview(self):
+        sym, is_red, is_unary, out_1bit = self.get_selected_op_info()
+        w = self.spin_width.value()
+        lbl = self.get_label()
+
+        if is_red:
+            mode_str = "Operador de Reducción (Vector a 1 bit)"
+            ports_str = f"• Entrada: A ({w} bits)\n• Salida:  out (1 bit)"
+        elif is_unary:
+            mode_str = "Operador Unario / Inversor (1 entrada)"
+            ports_str = f"• Entrada: A ({w} bits)\n• Salida:  out ({w} bits)"
+        else:
+            out_w = 1 if out_1bit else w
+            mode_str = f"Operador Binario ({'Comparador' if out_1bit else 'Aritmético/Lógico'})"
+            ports_str = f"• Entrada: A ({w} bits)\n• Entrada: B ({w} bits)\n• Salida:  out ({out_w} bit{'s' if out_w > 1 else ''})"
+
+        self.lbl_preview.setText(
+            f"Tipo: {mode_str}\n"
+            f"Símbolo Verilog: '{sym}'  |  Texto en círculo: '{lbl}'\n\n"
+            f"Configuración de Puertos:\n{ports_str}"
+        )
+
+
+class ParametersDialog(QDialog):
+    """Configuration dialog for Schematic Parameters (Verilog parameters like DATA_WIDTH, ADDR_WIDTH, N)."""
+
+    def __init__(self, schematic: RTLSchematic, parent=None):
+        super().__init__(parent)
+        self.schematic = schematic
+        self.setWindowTitle("Parámetros del Esquemático RTL (Verilog / ELO212)")
+        self.resize(520, 440)
+        self._init_ui()
+
+    def _init_ui(self):
+        layout = QVBoxLayout(self)
+
+        lbl_desc = QLabel(
+            "Defina parámetros globales reutilizables para anchos de buses de datos y direcciones (ej. DATA_WIDTH = 8, N = 16).\n"
+            "Los cables y bloques que usen estos parámetros se actualizarán automáticamente."
+        )
+        lbl_desc.setWordWrap(True)
+        lbl_desc.setStyleSheet("color: #444; font-size: 11px; margin-bottom: 6px;")
+        layout.addWidget(lbl_desc)
+
+        # Table of existing parameters
+        self.table = QTableWidget(0, 2)
+        self.table.setHorizontalHeaderLabels(["Nombre del Parámetro", "Valor (bits)"])
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.table.setColumnWidth(1, 120)
+        layout.addWidget(self.table)
+
+        self._populate_table()
+
+        # Add/Edit Box
+        box_edit = QGroupBox("Agregar o Modificar Parámetro")
+        form_edit = QFormLayout(box_edit)
+
+        self.edit_name = QLineEdit()
+        self.edit_name.setPlaceholderText("ej: DATA_WIDTH o N")
+        self.spin_val = QSpinBox()
+        self.spin_val.setRange(1, 1024)
+        self.spin_val.setValue(8)
+
+        form_edit.addRow("Nombre:", self.edit_name)
+        form_edit.addRow("Valor en bits:", self.spin_val)
+
+        btn_box_table = QHBoxLayout()
+        btn_add = QPushButton("➕ Guardar / Actualizar Parámetro")
+        btn_add.setStyleSheet("font-weight: bold; background: #28a745; color: white; padding: 5px;")
+        btn_del = QPushButton("➖ Eliminar Seleccionado")
+        btn_add.clicked.connect(self._save_param_from_inputs)
+        btn_del.clicked.connect(self._del_selected_param)
+        btn_box_table.addWidget(btn_add)
+        btn_box_table.addWidget(btn_del)
+        form_edit.addRow(btn_box_table)
+
+        layout.addWidget(box_edit)
+
+        # Dialog Buttons
+        btn_box = QHBoxLayout()
+        btn_close = QPushButton("Cerrar")
+        btn_close.clicked.connect(self.accept)
+        btn_box.addStretch()
+        btn_box.addWidget(btn_close)
+        layout.addLayout(btn_box)
+
+        self.table.itemSelectionChanged.connect(self._on_row_selected)
+
+    def _populate_table(self):
+        self.table.setRowCount(0)
+        for name, val in sorted(self.schematic.parameters.items()):
+            row = self.table.rowCount()
+            self.table.insertRow(row)
+            item_name = QTableWidgetItem(name)
+            item_name.setFlags(item_name.flags() & ~Qt.ItemIsEditable)
+            item_val = QTableWidgetItem(str(val))
+            item_val.setFlags(item_val.flags() & ~Qt.ItemIsEditable)
+            self.table.setItem(row, 0, item_name)
+            self.table.setItem(row, 1, item_val)
+
+    def _save_param_from_inputs(self):
+        name = self.edit_name.text().strip().upper()
+        if not name:
+            QMessageBox.warning(self, "Aviso", "Ingrese un nombre de parámetro válido (ej: DATA_WIDTH).")
+            return
+        if not re.match(r'^[A-Z_][A-Z0-9_]*$', name):
+            QMessageBox.warning(self, "Aviso", "El nombre debe ser un identificador Verilog válido (letras mayúsculas, números, guión bajo).")
+            return
+
+        val = self.spin_val.value()
+        self.schematic.set_parameter(name, val)
+        self._populate_table()
+        self.edit_name.clear()
+        self.edit_name.setFocus()
+
+    def _del_selected_param(self):
+        row = self.table.currentRow()
+        if row >= 0:
+            name_item = self.table.item(row, 0)
+            if name_item:
+                name = name_item.text()
+                self.schematic.remove_parameter(name)
+                self._populate_table()
+                self.edit_name.clear()
+
+    def _on_row_selected(self):
+        row = self.table.currentRow()
+        if row >= 0:
+            name_item = self.table.item(row, 0)
+            val_item = self.table.item(row, 1)
+            if name_item and val_item:
+                self.edit_name.setText(name_item.text())
+                self.spin_val.setValue(int(val_item.text()))
+
 
 class RTLEditorWidget(QWidget):
     def __init__(self, parent=None):
@@ -431,6 +738,8 @@ class RTLEditorWidget(QWidget):
         # Wire / Selection Properties
         box_props = QGroupBox("Propiedades del Cable Seleccionado")
         p_form = QFormLayout(box_props)
+        self.combo_wire_param = QComboBox()
+        self.combo_wire_param.currentIndexChanged.connect(self._on_wire_param_changed)
         self.spin_wire_width = QSpinBox()
         self.spin_wire_width.setRange(1, 128)
         self.spin_wire_width.setValue(1)
@@ -441,6 +750,7 @@ class RTLEditorWidget(QWidget):
         btn_apply_wire = QPushButton("Aplicar al Cable Seleccionado")
         btn_apply_wire.clicked.connect(self.apply_wire_props)
 
+        p_form.addRow("Parámetro de ancho:", self.combo_wire_param)
         p_form.addRow("Ancho de bits:", self.spin_wire_width)
         p_form.addRow("Etiqueta:", self.edit_wire_label)
         p_form.addRow(self.check_wire_arrow)
@@ -454,7 +764,17 @@ class RTLEditorWidget(QWidget):
         btn_reroute = QPushButton("🔄 Re-enrutar Cable (R)")
         btn_relabel = QPushButton("🏷️ Restablecer Etiquetas (Shift+R)")
         btn_edit_block = QPushButton("⚙️ Configurar Componente")
-        btn_edit_block.setToolTip("Configurar propiedades del bloque funcional, MUX o desagregador seleccionado")
+        btn_edit_block.setToolTip("Configurar propiedades del bloque funcional, MUX, desagregador u operador seleccionado")
+        btn_mirror = QPushButton("🪞 Reflejar Bloque (Ctrl+E)")
+        btn_mirror.setToolTip("Refleja horizontalmente los bloques seleccionados, invirtiendo pines de entrada y salida (Ctrl+E)")
+        btn_copy = QPushButton("📋 Copiar (Ctrl+C)")
+        btn_copy.setToolTip("Copiar componentes y cables seleccionados (Ctrl+C)")
+        btn_paste = QPushButton("📥 Pegar (Ctrl+V)")
+        btn_paste.setToolTip("Pegar elementos del portapapeles con desplazamiento (Ctrl+V)")
+        btn_params = QPushButton("📐 Parámetros del Esquemático...")
+        btn_params.setStyleSheet("font-weight: bold; background: #eef4fc; color: #0056b3; border: 1px solid #b8d4f8; padding: 4px;")
+        btn_params.setToolTip("Definir parámetros globales como DATA_WIDTH, N, etc. para anchos de bus")
+
         btn_solder = QPushButton("⚫ Colocar Solder Dot (Junction)")
         btn_del = QPushButton("🗑️ Eliminar Seleccionado (Supr)")
         btn_example = QPushButton("🔄 Cargar Ejemplo: Contador + Sumador")
@@ -463,6 +783,10 @@ class RTLEditorWidget(QWidget):
         btn_reroute.clicked.connect(self.scene.reset_selected_wire_routing)
         btn_relabel.clicked.connect(self.scene.reset_selected_labels)
         btn_edit_block.clicked.connect(self.edit_selected_block)
+        btn_mirror.clicked.connect(self.scene.reflect_selected_components)
+        btn_copy.clicked.connect(self.scene.copy_selected)
+        btn_paste.clicked.connect(self.scene.paste)
+        btn_params.clicked.connect(self.open_parameters_dialog)
         btn_solder.clicked.connect(self.add_solder_dot)
         btn_del.clicked.connect(self.scene_delete_selected)
         btn_example.clicked.connect(self.load_counter_example)
@@ -471,6 +795,10 @@ class RTLEditorWidget(QWidget):
         act_layout.addWidget(btn_reroute)
         act_layout.addWidget(btn_relabel)
         act_layout.addWidget(btn_edit_block)
+        act_layout.addWidget(btn_mirror)
+        act_layout.addWidget(btn_copy)
+        act_layout.addWidget(btn_paste)
+        act_layout.addWidget(btn_params)
         act_layout.addWidget(btn_solder)
         act_layout.addWidget(btn_del)
         act_layout.addWidget(btn_example)
@@ -499,24 +827,63 @@ class RTLEditorWidget(QWidget):
 
         self.scene.selectionChanged.connect(self._on_selection_changed)
 
+    def _update_param_combos(self):
+        self.combo_wire_param.blockSignals(True)
+        cur_data = self.combo_wire_param.currentData()
+        self.combo_wire_param.clear()
+        self.combo_wire_param.addItem("(Ninguno - Manual)", None)
+        for p_name, p_val in sorted(self.scene.schematic.parameters.items()):
+            self.combo_wire_param.addItem(f"{p_name} ({p_val} bits)", p_name)
+
+        idx = self.combo_wire_param.findData(cur_data)
+        if idx >= 0:
+            self.combo_wire_param.setCurrentIndex(idx)
+        else:
+            self.combo_wire_param.setCurrentIndex(0)
+        self.combo_wire_param.blockSignals(False)
+
     def _on_selection_changed(self):
+        self._update_param_combos()
         sel = self.scene.selectedItems()
         for item in sel:
             w_item = item if isinstance(item, RTLWireItem) else getattr(item, "wire_item", None)
             if isinstance(w_item, RTLWireItem):
+                self.combo_wire_param.blockSignals(True)
+                if w_item.model.width_param:
+                    idx = self.combo_wire_param.findData(w_item.model.width_param)
+                    if idx >= 0:
+                        self.combo_wire_param.setCurrentIndex(idx)
+                    else:
+                        self.combo_wire_param.setCurrentIndex(0)
+                else:
+                    self.combo_wire_param.setCurrentIndex(0)
+                self.combo_wire_param.blockSignals(False)
+
                 self.spin_wire_width.setValue(w_item.model.width)
                 self.edit_wire_label.setText(w_item.model.label)
                 self.check_wire_arrow.setChecked(w_item.model.show_arrow)
                 break
 
+    def _on_wire_param_changed(self, idx: int):
+        p_name = self.combo_wire_param.currentData()
+        if p_name:
+            val = self.scene.schematic.get_parameter_value(p_name, self.spin_wire_width.value())
+            self.spin_wire_width.setValue(val)
+
     def apply_wire_props(self):
         sel = self.scene.selectedItems()
         applied = False
+        param_name = self.combo_wire_param.currentData()
         for item in sel:
             w_item = item if isinstance(item, RTLWireItem) else getattr(item, "wire_item", None)
             if isinstance(w_item, RTLWireItem):
                 self.scene.push_undo_state()
-                w_item.model.width = self.spin_wire_width.value()
+                if param_name:
+                    w_item.model.width_param = param_name
+                    w_item.model.width = self.scene.schematic.get_parameter_value(param_name, self.spin_wire_width.value())
+                else:
+                    w_item.model.width_param = None
+                    w_item.model.width = self.spin_wire_width.value()
                 w_item.model.label = self.edit_wire_label.text().strip()
                 w_item.model.show_arrow = self.check_wire_arrow.isChecked()
                 w_item._sync_label_item()
@@ -527,6 +894,20 @@ class RTLEditorWidget(QWidget):
             self.lbl_status.setText("Propiedades del cable actualizadas.")
         else:
             QMessageBox.information(self, "Aviso", "Seleccione un cable primero en el canvas.")
+
+    def open_parameters_dialog(self):
+        dlg = ParametersDialog(self.scene.schematic, self)
+        self.scene.push_undo_state()
+        if dlg.exec():
+            self.scene.schematic.sync_parameter_widths()
+            self._update_param_combos()
+            for w in self.scene.wire_items.values():
+                w.prepareGeometryChange()
+                w.update()
+            for c in self.scene.comp_items.values():
+                c.rebuild_pins()
+                c.update()
+            self.lbl_status.setText(f"Parámetros del esquemático actualizados ({len(self.scene.schematic.parameters)} definidos).")
 
     def edit_selected_component(self):
         sel = self.scene.selectedItems()
@@ -541,7 +922,10 @@ class RTLEditorWidget(QWidget):
                 elif item.model.type == ComponentType.BUS_SPLITTER:
                     self.open_splitter_dialog(item)
                     return
-        QMessageBox.information(self, "Aviso", "Seleccione un bloque, multiplexor o desagregador para configurar.")
+                elif item.model.type == ComponentType.OPERATOR_CIRCLE:
+                    self.open_operator_dialog(item)
+                    return
+        QMessageBox.information(self, "Aviso", "Seleccione un bloque, multiplexor, desagregador u operador para configurar.")
 
     edit_selected_block = edit_selected_component
 
@@ -716,6 +1100,72 @@ class RTLEditorWidget(QWidget):
                 self.scene.on_component_moved(comp_item)
             self.lbl_status.setText(f"Desagregador de bus actualizado ({len(slice_list)} derivaciones).")
 
+    def open_operator_dialog(self, comp_item: RTLComponentItem):
+        comp = comp_item.model
+        dlg = OperatorPropertiesDialog(comp, self)
+        if dlg.exec():
+            self.scene.push_undo_state()
+            sym, is_red, is_unary, out_1bit = dlg.get_selected_op_info()
+            bus_w = dlg.get_width()
+            lbl = dlg.get_label()
+
+            comp.label = lbl
+            comp.properties["op"] = sym
+            comp.properties["bus_width"] = str(bus_w)
+            if is_red:
+                comp.properties["is_reduction"] = "True"
+                comp.properties.pop("is_unary", None)
+            elif is_unary:
+                comp.properties["is_unary"] = "True"
+                comp.properties.pop("is_reduction", None)
+            else:
+                comp.properties.pop("is_reduction", None)
+                comp.properties.pop("is_unary", None)
+
+            in_side = PinSide.RIGHT if getattr(comp, "mirrored", False) else PinSide.LEFT
+            out_side = PinSide.LEFT if getattr(comp, "mirrored", False) else PinSide.RIGHT
+
+            new_pins = []
+            if is_red or is_unary:
+                out_w = 1 if is_red else bus_w
+                new_pins.append(RTLPin(
+                    id=f"{comp.id}_a", name="A", direction=PinDirection.IN,
+                    side=in_side, offset=0.5, width=bus_w
+                ))
+                new_pins.append(RTLPin(
+                    id=f"{comp.id}_out", name="out", direction=PinDirection.OUT,
+                    side=out_side, offset=0.5, width=out_w
+                ))
+            else:
+                out_w = 1 if out_1bit else bus_w
+                new_pins.append(RTLPin(
+                    id=f"{comp.id}_a", name="A", direction=PinDirection.IN,
+                    side=in_side, offset=0.25, width=bus_w
+                ))
+                new_pins.append(RTLPin(
+                    id=f"{comp.id}_b", name="B", direction=PinDirection.IN,
+                    side=in_side, offset=0.75, width=bus_w
+                ))
+                new_pins.append(RTLPin(
+                    id=f"{comp.id}_out", name="out", direction=PinDirection.OUT,
+                    side=out_side, offset=0.5, width=out_w
+                ))
+
+            new_pin_ids = {p.id for p in new_pins}
+            wires_to_remove = [
+                w.id for w in self.scene.schematic.wires
+                if (w.source_comp_id == comp.id and w.source_pin_id not in new_pin_ids) or
+                   (w.target_comp_id == comp.id and w.target_pin_id not in new_pin_ids)
+            ]
+            for w_id in wires_to_remove:
+                self.scene.remove_wire(w_id)
+
+            comp.pins = new_pins
+            comp_item.rebuild_pins()
+            if hasattr(self.scene, "on_component_moved"):
+                self.scene.on_component_moved(comp_item)
+            self.lbl_status.setText(f"Operador circular '{comp.label}' actualizado ({bus_w} bits).")
+
     def spawn_mux(self):
         comp = ComponentFactory.create_mux(0, 0, num_inputs=2, width=1, label="MUX")
         item = self.scene.add_component(comp)
@@ -731,13 +1181,9 @@ class RTLEditorWidget(QWidget):
         self.lbl_status.setText("Registro agregado.")
 
     def spawn_operator(self):
-        op, ok = QInputDialog.getItem(self, "Operador Aritmético", "Operación:", ["+", "-", "*", "A>B", "A==B", "<<", ">>"], 0, False)
-        if not ok: return
-        width, ok2 = QInputDialog.getInt(self, "Operador", "Ancho de bits:", 4, 1, 64, 1)
-        if not ok2: return
-        comp = ComponentFactory.create_operator(0, 0, op=op, width=width)
-        self.scene.add_component(comp)
-        self.lbl_status.setText("Operador agregado.")
+        comp = ComponentFactory.create_operator(0, 0, op="+", width=4)
+        item = self.scene.add_component(comp)
+        self.open_operator_dialog(item)
 
     def spawn_gate(self):
         gate, ok = QInputDialog.getItem(self, "Compuerta Lógica", "Tipo:", ["AND", "OR", "NOT", "XOR"], 0, False)
@@ -789,18 +1235,18 @@ class RTLEditorWidget(QWidget):
         self.scene.wire_items.clear()
         self.scene.junction_items.clear()
 
-        # Constant 4'd1
-        c = ComponentFactory.create_constant(40, 140, val="4'd1", width=4)
-        # Adder circle '+'
-        adder = ComponentFactory.create_operator(160, 120, op="+", width=4)
-        # Register 4-bit
-        reg = ComponentFactory.create_register(360, 100, width=4, label="Count")
+        # Constant 4'd1 (80x40): out at (120, 180)
+        c = ComponentFactory.create_constant(40, 160, val="4'd1", width=4)
+        # Adder circle '+' (80x80): B at (180, 180) -> matches Constant out! out at (260, 160)
+        adder = ComponentFactory.create_operator(180, 120, op="+", width=4)
+        # Register 4-bit (80x80): D at (380, 160) -> matches Adder out!
+        reg = ComponentFactory.create_register(380, 120, width=4, label="Count")
 
         self.scene.add_component(c)
         self.scene.add_component(adder)
         self.scene.add_component(reg)
 
-        # Wire 1: Constant to Adder B
+        # Wire 1: Constant to Adder B (100% straight horizontal line at y=180)
         p_c = self.scene.comp_items[c.id].pin_items[0].scenePos()
         p_b = self.scene.comp_items[adder.id].pin_items[1].scenePos()
         pts1 = compute_manhattan_path(p_c, PinSide.RIGHT, p_b, PinSide.LEFT)
@@ -817,7 +1263,7 @@ class RTLEditorWidget(QWidget):
         self.scene.addItem(item1)
         self.scene.wire_items[w1.id] = item1
 
-        # Wire 2: Adder out to Reg D
+        # Wire 2: Adder out to Reg D (100% straight horizontal line at y=160)
         p_out = self.scene.comp_items[adder.id].pin_items[2].scenePos()
         p_d = self.scene.comp_items[reg.id].pin_items[0].scenePos()
         pts2 = compute_manhattan_path(p_out, PinSide.RIGHT, p_d, PinSide.LEFT)
@@ -850,5 +1296,5 @@ class RTLEditorWidget(QWidget):
         self.scene.addItem(item3)
         self.scene.wire_items[w3.id] = item3
 
-        self.view.centerOn(240, 140)
+        self.view.centerOn(260, 160)
         self.lbl_status.setText("Ejemplo canónico de ELO212 (Contador con Sumador y Realimentación) cargado.")

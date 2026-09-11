@@ -6,7 +6,7 @@ import unittest
 import os
 import tempfile
 from app.core.rtl_model import (
-    RTLSchematic, ComponentFactory, ComponentType, RTLWire, RTLJunction
+    RTLSchematic, RTLComponent, ComponentFactory, ComponentType, RTLWire, RTLJunction
 )
 
 
@@ -80,6 +80,70 @@ class TestRTLSuite(unittest.TestCase):
         finally:
             if os.path.exists(temp_path):
                 os.remove(temp_path)
+
+    def test_operator_reduction_and_unary_factory(self):
+        # Reduction operator
+        op_red = ComponentFactory.create_operator(100, 100, op="&", width=8, is_reduction=True)
+        self.assertEqual(len(op_red.pins), 2)
+        pin_a = next(p for p in op_red.pins if p.name == "A")
+        pin_out = next(p for p in op_red.pins if p.name == "out")
+        self.assertEqual(pin_a.width, 8)
+        self.assertEqual(pin_out.width, 1) # Reduction produces 1-bit result
+        self.assertEqual(pin_a.offset, 0.5) # Centered
+        self.assertEqual(pin_out.offset, 0.5)
+
+        # Unary operator
+        op_un = ComponentFactory.create_operator(100, 100, op="~", width=16)
+        self.assertEqual(len(op_un.pins), 2)
+        pin_a = next(p for p in op_un.pins if p.name == "A")
+        pin_out = next(p for p in op_un.pins if p.name == "out")
+        self.assertEqual(pin_a.width, 16)
+        self.assertEqual(pin_out.width, 16)
+
+        # Relational operator
+        op_rel = ComponentFactory.create_operator(100, 100, op="A>B", width=8)
+        self.assertEqual(len(op_rel.pins), 3) # A, B, out
+        pin_out = next(p for p in op_rel.pins if p.name == "out")
+        self.assertEqual(pin_out.width, 1) # Boolean output
+
+    def test_mirrored_serialization(self):
+        reg = ComponentFactory.create_register(150, 100, width=4, label="MirroredReg")
+        reg.mirrored = True
+        d = reg.to_dict()
+        self.assertTrue(d.get("mirrored", False))
+
+        restored = RTLComponent.from_dict(d)
+        self.assertTrue(restored.mirrored)
+
+    def test_schematic_parameters(self):
+        schematic = RTLSchematic(name="param_test")
+        schematic.set_parameter("DATA_WIDTH", 8)
+        schematic.set_parameter("ADDR_WIDTH", 4)
+        self.assertEqual(schematic.get_parameter_value("DATA_WIDTH"), 8)
+        self.assertEqual(schematic.get_parameter_value("ADDR_WIDTH"), 4)
+
+        wire = RTLWire(id="w1", width=8, width_param="DATA_WIDTH")
+        schematic.wires.append(wire)
+
+        # Update parameter value
+        schematic.set_parameter("DATA_WIDTH", 16)
+        self.assertEqual(wire.width, 16)
+
+        # Serialization round-trip
+        data = schematic.to_dict()
+        self.assertIn("DATA_WIDTH", data["parameters"])
+        self.assertEqual(data["parameters"]["DATA_WIDTH"], 16)
+        self.assertEqual(data["wires"][0]["width_param"], "DATA_WIDTH")
+
+        loaded = RTLSchematic.from_dict(data)
+        self.assertEqual(loaded.get_parameter_value("DATA_WIDTH"), 16)
+        self.assertEqual(loaded.wires[0].width_param, "DATA_WIDTH")
+        self.assertEqual(loaded.wires[0].width, 16)
+
+        # Remove parameter
+        loaded.remove_parameter("DATA_WIDTH")
+        self.assertNotIn("DATA_WIDTH", loaded.parameters)
+        self.assertIsNone(loaded.wires[0].width_param)
 
 
 if __name__ == "__main__":

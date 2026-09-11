@@ -47,6 +47,7 @@ class RTLPin:
     side: PinSide
     offset: float = 0.5  # Relative position (0.0 to 1.0) along side
     width: int = 1       # 1 for single-bit, >1 for bus
+    width_param: Optional[str] = None  # Parameter name (e.g. DATA_WIDTH) if parameterized
 
     def to_dict(self) -> dict:
         return {
@@ -55,7 +56,8 @@ class RTLPin:
             "direction": self.direction.value,
             "side": self.side.value,
             "offset": self.offset,
-            "width": self.width
+            "width": self.width,
+            "width_param": self.width_param
         }
 
     @classmethod
@@ -66,7 +68,8 @@ class RTLPin:
             direction=PinDirection(data.get("direction", PinDirection.IN.value)),
             side=PinSide(data.get("side", PinSide.LEFT.value)),
             offset=data.get("offset", 0.5),
-            width=data.get("width", 1)
+            width=data.get("width", 1),
+            width_param=data.get("width_param")
         )
 
 
@@ -81,6 +84,7 @@ class RTLComponent:
     height: float = 80.0
     pins: List[RTLPin] = field(default_factory=list)
     properties: Dict[str, str] = field(default_factory=dict)
+    mirrored: bool = False
 
     def get_pin(self, pin_id: str) -> Optional[RTLPin]:
         for p in self.pins:
@@ -98,7 +102,8 @@ class RTLComponent:
             "width": self.width,
             "height": self.height,
             "pins": [p.to_dict() for p in self.pins],
-            "properties": dict(self.properties)
+            "properties": dict(self.properties),
+            "mirrored": self.mirrored
         }
 
     @classmethod
@@ -112,7 +117,8 @@ class RTLComponent:
             width=data.get("width", 80.0),
             height=data.get("height", 80.0),
             pins=[RTLPin.from_dict(p) for p in data.get("pins", [])],
-            properties=dict(data.get("properties", {}))
+            properties=dict(data.get("properties", {})),
+            mirrored=data.get("mirrored", False)
         )
 
 
@@ -125,6 +131,7 @@ class RTLWire:
     target_pin_id: Optional[str] = None
     points: List[Tuple[float, float]] = field(default_factory=list)  # (x, y) Manhattan vertices
     width: int = 1                                                   # Bit width (default 1)
+    width_param: Optional[str] = None                                # Parameter name (e.g. DATA_WIDTH) if parameterized
     label: str = ""                                                  # Signal name, e.g. "bus_ej[5:0]"
     show_slash: bool = True                                          # Show diagonal slash with bit width
     manual_routing: bool = False                                     # If True, wire was manually routed/adjusted
@@ -140,6 +147,7 @@ class RTLWire:
             "target_pin_id": self.target_pin_id,
             "points": self.points,
             "width": self.width,
+            "width_param": self.width_param,
             "label": self.label,
             "show_slash": self.show_slash,
             "manual_routing": self.manual_routing,
@@ -159,6 +167,7 @@ class RTLWire:
             target_pin_id=data.get("target_pin_id"),
             points=[(p[0], p[1]) for p in data.get("points", [])],
             width=data.get("width", 1),
+            width_param=data.get("width_param"),
             label=data.get("label", ""),
             show_slash=data.get("show_slash", True),
             manual_routing=data.get("manual_routing", False),
@@ -198,6 +207,7 @@ class RTLSchematic:
     components: List[RTLComponent] = field(default_factory=list)
     wires: List[RTLWire] = field(default_factory=list)
     junctions: List[RTLJunction] = field(default_factory=list)
+    parameters: Dict[str, int] = field(default_factory=dict)  # e.g. {"DATA_WIDTH": 8, "ADDR_WIDTH": 4}
 
     def add_component(self, comp: RTLComponent):
         self.components.append(comp)
@@ -208,12 +218,48 @@ class RTLSchematic:
                 return c
         return None
 
+    def set_parameter(self, name: str, value: int):
+        clean = name.strip().upper()
+        if clean:
+            self.parameters[clean] = int(value)
+            self.sync_parameter_widths()
+
+    def remove_parameter(self, name: str):
+        clean = name.strip().upper()
+        if clean in self.parameters:
+            del self.parameters[clean]
+        for w in self.wires:
+            if w.width_param == clean:
+                w.width_param = None
+        for c in self.components:
+            if c.properties.get("bus_width_param") == clean:
+                c.properties.pop("bus_width_param", None)
+
+    def get_parameter_value(self, name: str, default: int = 1) -> int:
+        clean = name.strip().upper()
+        return self.parameters.get(clean, default)
+
+    def sync_parameter_widths(self):
+        """Synchronizes numeric bit-widths of all wires and component pins referencing parameters."""
+        for w in self.wires:
+            if w.width_param and w.width_param in self.parameters:
+                w.width = self.parameters[w.width_param]
+        for c in self.components:
+            p_name = c.properties.get("bus_width_param")
+            if p_name and p_name in self.parameters:
+                val = self.parameters[p_name]
+                c.properties["bus_width"] = str(val)
+                for p in c.pins:
+                    if p.width_param == p_name or (p.direction in (PinDirection.IN, PinDirection.OUT) and p.width > 1):
+                        p.width = val
+
     def to_dict(self) -> dict:
         return {
             "name": self.name,
             "components": [c.to_dict() for c in self.components],
             "wires": [w.to_dict() for w in self.wires],
-            "junctions": [j.to_dict() for j in self.junctions]
+            "junctions": [j.to_dict() for j in self.junctions],
+            "parameters": dict(self.parameters)
         }
 
     @classmethod
@@ -222,7 +268,8 @@ class RTLSchematic:
             name=data.get("name", "schematic_top"),
             components=[RTLComponent.from_dict(c) for c in data.get("components", [])],
             wires=[RTLWire.from_dict(w) for w in data.get("wires", [])],
-            junctions=[RTLJunction.from_dict(j) for j in data.get("junctions", [])]
+            junctions=[RTLJunction.from_dict(j) for j in data.get("junctions", [])],
+            parameters=dict(data.get("parameters", {}))
         )
 
     def save_to_file(self, filepath: str):
@@ -330,7 +377,7 @@ class ComponentFactory:
             RTLPin(id=f"{comp_id}_Q", name="Q", direction=PinDirection.OUT, side=PinSide.RIGHT, offset=0.5, width=width),
             RTLPin(id=f"{comp_id}_clk", name="clk", direction=PinDirection.CONTROL, side=PinSide.BOTTOM, offset=0.5, width=1),
             RTLPin(id=f"{comp_id}_rst", name="rst", direction=PinDirection.CONTROL, side=PinSide.TOP, offset=0.5, width=1),
-            RTLPin(id=f"{comp_id}_ce", name="CE", direction=PinDirection.CONTROL, side=PinSide.LEFT, offset=0.8, width=1)
+            RTLPin(id=f"{comp_id}_ce", name="CE", direction=PinDirection.CONTROL, side=PinSide.LEFT, offset=0.75, width=1)
         ]
         return RTLComponent(
             id=comp_id,
@@ -339,29 +386,50 @@ class ComponentFactory:
             x=x,
             y=y,
             width=80.0,
-            height=100.0,
+            height=80.0,
             pins=pins,
             properties={"bus_width": str(width)}
         )
 
     @staticmethod
-    def create_operator(x: float = 0, y: float = 0, op: str = "+", width: int = 4) -> RTLComponent:
+    def create_operator(x: float = 0, y: float = 0, op: str = "+", width: int = 4, is_reduction: bool = False) -> RTLComponent:
         comp_id = f"op_{uuid.uuid4().hex[:6]}"
-        pins = [
-            RTLPin(id=f"{comp_id}_a", name="A", direction=PinDirection.IN, side=PinSide.LEFT, offset=0.3, width=width),
-            RTLPin(id=f"{comp_id}_b", name="B", direction=PinDirection.IN, side=PinSide.LEFT, offset=0.7, width=width),
-            RTLPin(id=f"{comp_id}_out", name="out", direction=PinDirection.OUT, side=PinSide.RIGHT, offset=0.5, width=width)
-        ]
+        is_red = is_reduction or op.endswith("(red)")
+        is_unary = op in ("~", "- (unario)", "INV", "NOT")
+        
+        clean_lbl = op.replace(" (red)", "").replace(" (unario)", "")
+
+        if is_red:
+            pins = [
+                RTLPin(id=f"{comp_id}_a", name="A", direction=PinDirection.IN, side=PinSide.LEFT, offset=0.5, width=width),
+                RTLPin(id=f"{comp_id}_out", name="out", direction=PinDirection.OUT, side=PinSide.RIGHT, offset=0.5, width=1)
+            ]
+            props = {"op": op, "bus_width": str(width), "is_reduction": "True"}
+        elif is_unary:
+            pins = [
+                RTLPin(id=f"{comp_id}_a", name="A", direction=PinDirection.IN, side=PinSide.LEFT, offset=0.5, width=width),
+                RTLPin(id=f"{comp_id}_out", name="out", direction=PinDirection.OUT, side=PinSide.RIGHT, offset=0.5, width=width)
+            ]
+            props = {"op": op, "bus_width": str(width), "is_unary": "True"}
+        else:
+            out_w = 1 if op in ("A==B", "A!=B", "A>B", "A<B", "A>=B", "A<=B") else width
+            pins = [
+                RTLPin(id=f"{comp_id}_a", name="A", direction=PinDirection.IN, side=PinSide.LEFT, offset=0.25, width=width),
+                RTLPin(id=f"{comp_id}_b", name="B", direction=PinDirection.IN, side=PinSide.LEFT, offset=0.75, width=width),
+                RTLPin(id=f"{comp_id}_out", name="out", direction=PinDirection.OUT, side=PinSide.RIGHT, offset=0.5, width=out_w)
+            ]
+            props = {"op": op, "bus_width": str(width)}
+
         return RTLComponent(
             id=comp_id,
             type=ComponentType.OPERATOR_CIRCLE,
-            label=op,
+            label=clean_lbl,
             x=x,
             y=y,
-            width=60.0,
-            height=60.0,
+            width=80.0,
+            height=80.0,
             pins=pins,
-            properties={"op": op, "bus_width": str(width)}
+            properties=props
         )
 
     @staticmethod
@@ -376,8 +444,8 @@ class ComponentFactory:
             label=val,
             x=x,
             y=y,
-            width=70.0,
-            height=35.0,
+            width=80.0,
+            height=40.0,
             pins=pins,
             properties={"val": val, "bus_width": str(width)}
         )
@@ -412,7 +480,7 @@ class ComponentFactory:
             x=x,
             y=y,
             width=comp_w,
-            height=max(70.0, len(slice_list) * 40.0),
+            height=max(80.0, len(slice_list) * 40.0),
             pins=pins,
             properties={"in_width": str(in_width), "slices": slices, "base_name": base_name}
         )
@@ -434,8 +502,8 @@ class ComponentFactory:
             ]
         else:
             pins = [
-                RTLPin(id=f"{comp_id}_a", name="A", direction=PinDirection.IN, side=PinSide.LEFT, offset=0.3, width=1),
-                RTLPin(id=f"{comp_id}_b", name="B", direction=PinDirection.IN, side=PinSide.LEFT, offset=0.7, width=1),
+                RTLPin(id=f"{comp_id}_a", name="A", direction=PinDirection.IN, side=PinSide.LEFT, offset=0.25, width=1),
+                RTLPin(id=f"{comp_id}_b", name="B", direction=PinDirection.IN, side=PinSide.LEFT, offset=0.75, width=1),
                 RTLPin(id=f"{comp_id}_out", name="out", direction=PinDirection.OUT, side=PinSide.RIGHT, offset=0.5, width=1)
             ]
         return RTLComponent(
@@ -444,8 +512,8 @@ class ComponentFactory:
             label=gate_type.upper(),
             x=x,
             y=y,
-            width=65.0,
-            height=55.0,
+            width=80.0,
+            height=80.0,
             pins=pins
         )
 

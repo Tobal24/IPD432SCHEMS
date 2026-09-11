@@ -105,6 +105,10 @@ class RTLGraphicsScene(QGraphicsScene):
         self.redo_stack: List[dict] = []
         self.max_undo = 50
 
+        # Clipboard for Copy / Paste
+        self._clipboard: Optional[dict] = None
+        self._paste_count: int = 1
+
         # Wire drawing mode state
         self.wiring_active = False
         self.wire_start_pin: Optional[RTLPinItem] = None
@@ -304,6 +308,144 @@ class RTLGraphicsScene(QGraphicsScene):
             w_item.reset_label_pos()
         self.status_message.emit("Posición de etiquetas de cable restablecida (Shift+R).")
 
+    def reflect_selected_components(self):
+        selected_comps = [item for item in self.selectedItems() if isinstance(item, RTLComponentItem)]
+        if not selected_comps:
+            self.status_message.emit("Seleccione uno o más bloques para reflejar (Ctrl+E).")
+            return
+
+        self.push_undo_state()
+        for comp_item in selected_comps:
+            comp = comp_item.model
+            comp.mirrored = not getattr(comp, "mirrored", False)
+            for pin in comp.pins:
+                if pin.side == PinSide.LEFT:
+                    pin.side = PinSide.RIGHT
+                elif pin.side == PinSide.RIGHT:
+                    pin.side = PinSide.LEFT
+                elif pin.side in (PinSide.TOP, PinSide.BOTTOM):
+                    pin.offset = round(1.0 - pin.offset, 4)
+            comp_item.rebuild_pins()
+            self.on_component_moved(comp_item)
+            comp_item.update()
+
+        self.status_message.emit("Bloque(s) reflejado(s) horizontalmente. (Ctrl+Z para deshacer)")
+
+    def copy_selected(self):
+        sel = self.selectedItems()
+        selected_comps = [item.model for item in sel if isinstance(item, RTLComponentItem)]
+        selected_comp_ids = {c.id for c in selected_comps}
+
+        # Collect internal wires connecting two selected components or explicitly selected wires
+        selected_wires = []
+        for w_id, w_item in self.wire_items.items():
+            w = w_item.model
+            if (w.source_comp_id in selected_comp_ids and w.target_comp_id in selected_comp_ids) or (w_item.isSelected() and w.source_comp_id in selected_comp_ids and w.target_comp_id in selected_comp_ids):
+                selected_wires.append(w)
+
+        selected_junctions = [
+            next((j for j in self.schematic.junctions if j.id == item.j_id), None)
+            for item in sel if isinstance(item, RTLJunctionItem)
+        ]
+        selected_junctions = [j for j in selected_junctions if j is not None]
+
+        if not selected_comps and not selected_wires and not selected_junctions:
+            self.status_message.emit("No hay elementos seleccionados para copiar (Ctrl+C).")
+            return
+
+        self._clipboard = {
+            "components": [c.to_dict() for c in selected_comps],
+            "wires": [w.to_dict() for w in selected_wires],
+            "junctions": [j.to_dict() for j in selected_junctions]
+        }
+        self._paste_count = 1
+        total_items = len(selected_comps) + len(selected_wires) + len(selected_junctions)
+        self.status_message.emit(f"Copiado(s) {total_items} elemento(s) al portapapeles (Ctrl+C).")
+
+    def paste(self):
+        if not self._clipboard or not (
+            self._clipboard.get("components") or
+            self._clipboard.get("wires") or
+            self._clipboard.get("junctions")
+        ):
+            self.status_message.emit("Portapapeles vacío. Copie elementos primero con Ctrl+C.")
+            return
+
+        self.push_undo_state()
+        self.clearSelection()
+
+        delta = float(self._paste_count * 20)
+        self._paste_count += 1
+
+        comp_id_map = {}
+        pin_id_map = {}
+        new_items = []
+
+        # 1. Duplicate components
+        for c_data in self._clipboard.get("components", []):
+            old_id = c_data["id"]
+            new_id = f"{c_data.get('type', 'comp').lower()}_{uuid.uuid4().hex[:6]}"
+            comp_id_map[old_id] = new_id
+
+            c_copy = RTLComponent.from_dict(c_data)
+            c_copy.id = new_id
+            c_copy.x = snap(c_copy.x + delta)
+            c_copy.y = snap(c_copy.y + delta)
+
+            # Re-generate pin IDs
+            for idx, pin in enumerate(c_copy.pins):
+                old_pid = pin.id
+                new_pid = f"{new_id}_{pin.name}_{idx}"
+                pin_id_map[old_pid] = new_pid
+                pin.id = new_pid
+
+            self.schematic.add_component(c_copy)
+            item = RTLComponentItem(c_copy)
+            self.addItem(item)
+            self.comp_items[new_id] = item
+            item.setSelected(True)
+            new_items.append(item)
+
+        # 2. Duplicate wires connecting copied components
+        for w_data in self._clipboard.get("wires", []):
+            s_cid = w_data.get("source_comp_id")
+            t_cid = w_data.get("target_comp_id")
+            s_pid = w_data.get("source_pin_id")
+            t_pid = w_data.get("target_pin_id")
+
+            if s_cid in comp_id_map and t_cid in comp_id_map:
+                w_copy = RTLWire.from_dict(w_data)
+                w_copy.id = f"wire_{uuid.uuid4().hex[:6]}"
+                w_copy.source_comp_id = comp_id_map[s_cid]
+                w_copy.target_comp_id = comp_id_map[t_cid]
+                w_copy.source_pin_id = pin_id_map.get(s_pid, s_pid)
+                w_copy.target_pin_id = pin_id_map.get(t_pid, t_pid)
+                w_copy.points = [(snap(pt[0] + delta), snap(pt[1] + delta)) for pt in w_copy.points]
+                if w_copy.label_pos:
+                    w_copy.label_pos = (snap(w_copy.label_pos[0] + delta), snap(w_copy.label_pos[1] + delta))
+
+                self.schematic.wires.append(w_copy)
+                w_item = RTLWireItem(w_copy)
+                self.addItem(w_item)
+                self.wire_items[w_copy.id] = w_item
+                w_item.setSelected(True)
+                new_items.append(w_item)
+
+        # 3. Duplicate junctions
+        for j_data in self._clipboard.get("junctions", []):
+            j_copy = RTLJunction.from_dict(j_data)
+            j_copy.id = f"junc_{uuid.uuid4().hex[:6]}"
+            j_copy.x = snap(j_copy.x + delta)
+            j_copy.y = snap(j_copy.y + delta)
+            self.schematic.junctions.append(j_copy)
+            j_item = RTLJunctionItem(j_copy.x, j_copy.y, j_copy.id)
+            self.addItem(j_item)
+            self.junction_items[j_copy.id] = j_item
+            j_item.setSelected(True)
+            new_items.append(j_item)
+
+        self.status_message.emit(f"Pegado(s) {len(new_items)} elemento(s) (Ctrl+V). (Ctrl+Z para deshacer)")
+
     def start_wiring(self, pin_item: RTLPinItem):
         self.wiring_active = True
         self.wire_start_pin = pin_item
@@ -402,6 +544,18 @@ class RTLGraphicsScene(QGraphicsScene):
                 self.redo()
                 event.accept()
                 return
+            elif event.key() == Qt.Key_E:
+                self.reflect_selected_components()
+                event.accept()
+                return
+            elif event.key() == Qt.Key_C:
+                self.copy_selected()
+                event.accept()
+                return
+            elif event.key() == Qt.Key_V:
+                self.paste()
+                event.accept()
+                return
 
         if event.key() == Qt.Key_R:
             if event.modifiers() & Qt.ShiftModifier:
@@ -465,19 +619,42 @@ class RTLGraphicsScene(QGraphicsScene):
                 act_edit = menu.addAction("⚙️ Configurar Multiplexor (MUX)...")
             elif item.model.type == ComponentType.BUS_SPLITTER:
                 act_edit = menu.addAction("⚙️ Configurar Desagregador de Bus...")
+            elif item.model.type == ComponentType.OPERATOR_CIRCLE:
+                act_edit = menu.addAction("⚙️ Configurar Operador...")
 
-            if act_edit:
-                menu.addSeparator()
+            act_mirror = menu.addAction("🪞 Reflejar Bloque Horizontalmente (Ctrl+E)")
+            act_copy = menu.addAction("📋 Copiar Componente (Ctrl+C)")
+            act_paste = menu.addAction("📥 Pegar (Ctrl+V)")
+            act_paste.setEnabled(bool(self._clipboard))
+            menu.addSeparator()
             act_del = menu.addAction("🗑️ Eliminar Componente (Supr)")
             action = menu.exec(event.screenPos())
             if act_edit and action == act_edit:
                 item.mouseDoubleClickEvent(None)
+            elif action == act_mirror:
+                if not item.isSelected():
+                    self.clearSelection()
+                    item.setSelected(True)
+                self.reflect_selected_components()
+            elif action == act_copy:
+                if not item.isSelected():
+                    self.clearSelection()
+                    item.setSelected(True)
+                self.copy_selected()
+            elif action == act_paste:
+                self.paste()
             elif action == act_del:
                 self.remove_selected()
             event.accept()
             return
 
-        super().contextMenuEvent(event)
+        menu = QMenu()
+        act_paste = menu.addAction("📥 Pegar (Ctrl+V)")
+        act_paste.setEnabled(bool(self._clipboard))
+        action = menu.exec(event.screenPos())
+        if action == act_paste:
+            self.paste()
+        event.accept()
 
 
 class RTLGraphicsView(QGraphicsView):

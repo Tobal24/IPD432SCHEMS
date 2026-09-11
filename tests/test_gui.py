@@ -14,7 +14,7 @@ from PySide6.QtCore import QPointF
 from PySide6.QtWidgets import QApplication
 from app.gui.main_window import MainWindow
 from app.core.rtl_model import ComponentFactory, ComponentType, RTLPin, PinDirection, PinSide
-from app.gui.rtl_items import RTLWireItem
+from app.gui.rtl_items import RTLWireItem, RTLComponentItem
 from app.core.fsm_model import FSMType
 
 app = QApplication.instance() or QApplication(sys.argv)
@@ -265,8 +265,8 @@ class TestGUIIntegration(unittest.TestCase):
         w_feedback_item = scene.wire_items["w_feedback"]
         w_sum_item = scene.wire_items["w_sum"]
 
-        # Points along next_count wire (at y=150 between x=220 and x=320)
-        test_pt = QPointF(250, 150)
+        # Points along next_count wire (at y=160 between x=260 and x=380)
+        test_pt = QPointF(300, 160)
 
         # The stroked shape of w_sum MUST contain this point
         self.assertTrue(w_sum_item.shape().contains(w_sum_item.mapFromScene(test_pt)))
@@ -276,8 +276,83 @@ class TestGUIIntegration(unittest.TestCase):
 
         # Next count label item must be selectable and movable
         self.assertIsNotNone(w_sum_item.label_item)
-        w_sum_item.label_item.setPos(250, 120)
+        w_sum_item.label_item.setPos(300, 130)
         self.assertIsNotNone(w_sum_item.model.label_pos)
+
+    def test_straight_horizontal_connection_no_jogs(self):
+        """Verify connections are uninterrupted straight horizontal lines without vertical jogs"""
+        rtl_tab = self.win.tab_rtl
+        rtl_tab.load_counter_example()
+        scene = rtl_tab.scene
+
+        w_const = scene.wire_items["w_const"].model
+        w_sum = scene.wire_items["w_sum"].model
+
+        # Constant out (y=180) to Adder pin B (y=180) -> exactly 2 points, same Y
+        self.assertEqual(len(w_const.points), 2)
+        self.assertEqual(w_const.points[0][1], 180.0)
+        self.assertEqual(w_const.points[1][1], 180.0)
+
+        # Adder out (y=160) to Reg pin D (y=160) -> exactly 2 points, same Y
+        self.assertEqual(len(w_sum.points), 2)
+        self.assertEqual(w_sum.points[0][1], 160.0)
+        self.assertEqual(w_sum.points[1][1], 160.0)
+
+    def test_block_reflection_ctrl_e(self):
+        """Verify horizontal block mirroring (Ctrl+E) and undo support"""
+        rtl_tab = self.win.tab_rtl
+        rtl_tab.load_counter_example()
+        scene = rtl_tab.scene
+
+        # Select the Register
+        reg_item = next(it for it in scene.comp_items.values() if it.model.type == ComponentType.REGISTER)
+        scene.clearSelection()
+        reg_item.setSelected(True)
+
+        comp = reg_item.model
+        self.assertFalse(getattr(comp, "mirrored", False))
+
+        pin_d = next(p for p in comp.pins if p.name == "D")
+        pin_q = next(p for p in comp.pins if p.name == "Q")
+        self.assertEqual(pin_d.side, PinSide.LEFT)
+        self.assertEqual(pin_q.side, PinSide.RIGHT)
+
+        # Trigger reflection
+        scene.reflect_selected_components()
+        self.assertTrue(comp.mirrored)
+        self.assertEqual(pin_d.side, PinSide.RIGHT)
+        self.assertEqual(pin_q.side, PinSide.LEFT)
+
+        # Undo reflection
+        scene.undo()
+        restored_reg = next(c for c in scene.schematic.components if c.type == ComponentType.REGISTER)
+        self.assertFalse(restored_reg.mirrored)
+        pin_d_restored = next(p for p in restored_reg.pins if p.name == "D")
+        pin_q_restored = next(p for p in restored_reg.pins if p.name == "Q")
+        self.assertEqual(pin_d_restored.side, PinSide.LEFT)
+        self.assertEqual(pin_q_restored.side, PinSide.RIGHT)
+
+    def test_operator_reduction_and_unary(self):
+        """Verify circular operator configuration with reduction and unary operations"""
+        from app.gui.rtl_view import OperatorPropertiesDialog
+        op = ComponentFactory.create_operator(100, 100, op="+", width=8)
+        self.assertEqual(len(op.pins), 3) # A, B, out
+
+        # Test dialog reduction info
+        dlg = OperatorPropertiesDialog(op)
+        # Switch to Reducción
+        dlg.combo_category.setCurrentIndex(2) # Reducción (Vector -> 1 bit)
+        sym, is_red, is_unary, out_1bit = dlg.get_selected_op_info()
+        self.assertTrue(is_red)
+        self.assertFalse(is_unary)
+        self.assertTrue(out_1bit)
+
+        # Switch to Unarias
+        dlg.combo_category.setCurrentIndex(3) # Unarias / Inversión
+        sym, is_red, is_unary, out_1bit = dlg.get_selected_op_info()
+        self.assertFalse(is_red)
+        self.assertTrue(is_unary)
+        self.assertFalse(out_1bit)
 
     def test_wire_directional_arrow(self):
         """Verify directional signal arrows at target pins (ELO212 Figure 4)"""
@@ -312,6 +387,73 @@ class TestGUIIntegration(unittest.TestCase):
         rtl_tab.check_wire_arrow.setChecked(False)
         rtl_tab.apply_wire_props()
         self.assertFalse(w1_item.model.show_arrow)
+
+    def test_copy_paste_components_and_wires(self):
+        """Verify copying selected components with connecting wires and pasting with offset (Ctrl+C, Ctrl+V) and Undo"""
+        rtl_tab = self.win.tab_rtl
+        rtl_tab.load_counter_example()
+        scene = rtl_tab.scene
+
+        init_comp_count = len(scene.comp_items)
+        init_wire_count = len(scene.wire_items)
+
+        # Select all components
+        scene.clearSelection()
+        for it in scene.comp_items.values():
+            it.setSelected(True)
+
+        # Copy
+        scene.copy_selected()
+        self.assertIsNotNone(scene._clipboard)
+        self.assertEqual(len(scene._clipboard["components"]), 3)
+        self.assertEqual(len(scene._clipboard["wires"]), 3)
+
+        # Paste
+        scene.paste()
+        self.assertEqual(len(scene.comp_items), init_comp_count + 3)
+        self.assertEqual(len(scene.wire_items), init_wire_count + 3)
+
+        # Newly pasted items must be selected
+        selected_comps = [it for it in scene.selectedItems() if isinstance(it, RTLComponentItem)]
+        self.assertEqual(len(selected_comps), 3)
+
+        # Verify offset: Constant was originally at (40, 160), pasted copy should be at (60, 180)
+        pasted_const = next(it for it in selected_comps if it.model.type == ComponentType.CONSTANT)
+        self.assertEqual(pasted_const.model.x, 60.0)
+        self.assertEqual(pasted_const.model.y, 180.0)
+
+        # Test Undo restores original scene
+        scene.undo()
+        self.assertEqual(len(scene.schematic.components), init_comp_count)
+        self.assertEqual(len(scene.schematic.wires), init_wire_count)
+
+    def test_wire_parameter_ui_and_rendering(self):
+        """Verify parameter assignment to wire and slash rendering"""
+        rtl_tab = self.win.tab_rtl
+        rtl_tab.load_counter_example()
+        scene = rtl_tab.scene
+
+        # Define parameter
+        scene.schematic.set_parameter("DATA_WIDTH", 8)
+        rtl_tab._update_param_combos()
+
+        w1_item = scene.wire_items["w_const"]
+        scene.clearSelection()
+        w1_item.setSelected(True)
+        rtl_tab._on_selection_changed()
+
+        # Select DATA_WIDTH in combo
+        idx = rtl_tab.combo_wire_param.findData("DATA_WIDTH")
+        self.assertGreaterEqual(idx, 0)
+        rtl_tab.combo_wire_param.setCurrentIndex(idx)
+        rtl_tab.apply_wire_props()
+
+        self.assertEqual(w1_item.model.width_param, "DATA_WIDTH")
+        self.assertEqual(w1_item.model.width, 8)
+
+        # Update parameter in schematic
+        scene.schematic.set_parameter("DATA_WIDTH", 16)
+        self.assertEqual(w1_item.model.width, 16)
 
 
 if __name__ == "__main__":
