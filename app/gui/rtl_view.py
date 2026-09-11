@@ -13,11 +13,12 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QGroupBox,
     QPushButton, QLabel, QLineEdit, QSpinBox, QComboBox,
     QFormLayout, QMessageBox, QInputDialog, QDialog,
-    QTableWidget, QTableWidgetItem, QHeaderView, QTabWidget, QCheckBox
+    QTableWidget, QTableWidgetItem, QHeaderView, QTabWidget, QCheckBox,
+    QScrollArea
 )
 from app.core.rtl_model import (
     RTLSchematic, RTLComponent, RTLWire, RTLPin, ComponentFactory,
-    ComponentType, PinSide, PinDirection
+    ComponentType, PinSide, PinDirection, parse_slice_width
 )
 from app.gui.rtl_canvas import RTLGraphicsScene, RTLGraphicsView, compute_manhattan_path
 from app.gui.rtl_items import RTLComponentItem, RTLWireItem
@@ -673,6 +674,93 @@ class ParametersDialog(QDialog):
                 self.spin_val.setValue(int(val_item.text()))
 
 
+class RTLPortConfigDialog(QDialog):
+    """Configuration dialog for Input / Output Port indicators (Vivado / ELO212 style)"""
+
+    def __init__(self, comp: RTLComponent, schematic_params: dict = None, parent=None):
+        super().__init__(parent)
+        self.comp = comp
+        self.schematic_params = schematic_params or {}
+        is_in = (comp.type == ComponentType.INPUT_PORT)
+        title_type = "Entrada (Input)" if is_in else "Salida (Output)"
+        self.setWindowTitle(f"Configurar Puerto de {title_type}: {comp.label}")
+        self.resize(400, 260)
+        self._init_ui()
+
+    def _init_ui(self):
+        layout = QVBoxLayout(self)
+
+        is_in = (self.comp.type == ComponentType.INPUT_PORT)
+        box = QGroupBox(f"Propiedades del Puerto de {'Entrada' if is_in else 'Salida'}")
+        form = QFormLayout(box)
+
+        self.edit_name = QLineEdit(self.comp.label)
+        self.edit_name.setPlaceholderText("ej: clk_100M, rst, anodes[7:0]")
+        self.edit_name.textChanged.connect(self._on_name_changed)
+
+        cur_w = 1
+        if self.comp.pins:
+            cur_w = self.comp.pins[0].width
+        else:
+            try:
+                cur_w = int(self.comp.properties.get("bus_width", "1"))
+            except ValueError:
+                cur_w = 1
+
+        self.spin_width = QSpinBox()
+        self.spin_width.setRange(1, 128)
+        self.spin_width.setValue(cur_w)
+
+        self.combo_param = QComboBox()
+        self.combo_param.addItem("(Ninguno - Manual)", None)
+        cur_param = self.comp.properties.get("bus_width_param") or (self.comp.pins[0].width_param if self.comp.pins else None)
+        sel_idx = 0
+        for idx, (p_name, p_val) in enumerate(sorted(self.schematic_params.items()), start=1):
+            self.combo_param.addItem(f"{p_name} ({p_val} bits)", p_name)
+            if p_name == cur_param:
+                sel_idx = idx
+        self.combo_param.setCurrentIndex(sel_idx)
+        self.combo_param.currentIndexChanged.connect(self._on_param_changed)
+
+        form.addRow("Nombre del Puerto:", self.edit_name)
+        form.addRow("Ancho de bits:", self.spin_width)
+        form.addRow("Parámetro global:", self.combo_param)
+
+        lbl_hint = QLabel(
+            "<i>Consejo: Si escribe corchetes como <code>bus[7:0]</code> en el nombre, "
+            "el ancho se calculará automáticamente. Si el ancho es > 1 bit, el indicador "
+            "se dibujará con trazo grueso (bus).</i>"
+        )
+        lbl_hint.setWordWrap(True)
+        lbl_hint.setStyleSheet("color: #555; font-size: 11px; padding: 4px;")
+        form.addRow(lbl_hint)
+
+        layout.addWidget(box)
+
+        # Buttons
+        btn_box = QHBoxLayout()
+        btn_ok = QPushButton("Guardar Cambios")
+        btn_ok.setStyleSheet("font-weight: bold; background: #0066cc; color: white; padding: 6px;")
+        btn_ok.clicked.connect(self.accept)
+        btn_cancel = QPushButton("Cancelar")
+        btn_cancel.clicked.connect(self.reject)
+
+        btn_box.addStretch()
+        btn_box.addWidget(btn_cancel)
+        btn_box.addWidget(btn_ok)
+        layout.addLayout(btn_box)
+
+    def _on_name_changed(self, text: str):
+        parsed = parse_slice_width(text)
+        if parsed > 1:
+            self.spin_width.setValue(parsed)
+
+    def _on_param_changed(self):
+        p_name = self.combo_param.currentData()
+        if p_name and p_name in self.schematic_params:
+            self.spin_width.setValue(self.schematic_params[p_name])
+
+
 class RTLEditorWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -688,14 +776,50 @@ class RTLEditorWidget(QWidget):
         layout.addWidget(splitter)
 
         # -------------------------------------------------------------
-        # Left Panel: Component Palette & Tools
+        # Left Panel: Component Palette & Tools (Scrollable)
         # -------------------------------------------------------------
         palette_panel = QWidget()
         pal_layout = QVBoxLayout(palette_panel)
+        pal_layout.setContentsMargins(6, 6, 6, 6)
+        pal_layout.setSpacing(8)
+
+        palette_panel.setStyleSheet("""
+            QGroupBox {
+                font-weight: bold;
+                margin-top: 6px;
+                padding-top: 10px;
+                border: 1px solid #dcdfe6;
+                border-radius: 5px;
+                background: #ffffff;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                subcontrol-position: top left;
+                padding: 0 5px;
+                color: #2c3e50;
+            }
+            QPushButton {
+                min-height: 27px;
+                padding: 4px 8px;
+                font-size: 11px;
+                border-radius: 4px;
+                border: 1px solid #d0d7de;
+                background-color: #f6f8fa;
+                color: #24292f;
+            }
+            QPushButton:hover {
+                background-color: #eef2f6;
+                border-color: #0969da;
+            }
+            QPushButton:pressed {
+                background-color: #d8e2ec;
+            }
+        """)
 
         # Standards reminder
         box_guide = QGroupBox("Normas ELO212")
         g_layout = QVBoxLayout(box_guide)
+        g_layout.setContentsMargins(8, 8, 8, 8)
         lbl_guide = QLabel(
             "• Entradas a la izquierda, salidas a la derecha.\n"
             "• Cables ortogonales (sin diagonales).\n"
@@ -709,7 +833,11 @@ class RTLEditorWidget(QWidget):
         # Component Creation
         box_add = QGroupBox("Agregar Componentes")
         add_layout = QVBoxLayout(box_add)
+        add_layout.setContentsMargins(8, 8, 8, 8)
+        add_layout.setSpacing(4)
 
+        btn_in_port = QPushButton("➕ Puerto de Entrada (Input)")
+        btn_out_port = QPushButton("➕ Puerto de Salida (Output)")
         btn_mux = QPushButton("➕ Multiplexor (MUX)")
         btn_reg = QPushButton("➕ Registro / Flip-Flop")
         btn_op = QPushButton("➕ Operador Circular (+, >)")
@@ -718,6 +846,8 @@ class RTLEditorWidget(QWidget):
         btn_const = QPushButton("➕ Constante (1'b0, 4'd1)")
         btn_block = QPushButton("➕ Bloque Genérico")
 
+        btn_in_port.clicked.connect(self.spawn_input_port)
+        btn_out_port.clicked.connect(self.spawn_output_port)
         btn_mux.clicked.connect(self.spawn_mux)
         btn_reg.clicked.connect(self.spawn_register)
         btn_op.clicked.connect(self.spawn_operator)
@@ -726,6 +856,8 @@ class RTLEditorWidget(QWidget):
         btn_const.clicked.connect(self.spawn_constant)
         btn_block.clicked.connect(self.spawn_block)
 
+        add_layout.addWidget(btn_in_port)
+        add_layout.addWidget(btn_out_port)
         add_layout.addWidget(btn_mux)
         add_layout.addWidget(btn_reg)
         add_layout.addWidget(btn_op)
@@ -738,6 +870,7 @@ class RTLEditorWidget(QWidget):
         # Wire / Selection Properties
         box_props = QGroupBox("Propiedades del Cable Seleccionado")
         p_form = QFormLayout(box_props)
+        p_form.setContentsMargins(8, 8, 8, 8)
         self.combo_wire_param = QComboBox()
         self.combo_wire_param.currentIndexChanged.connect(self._on_wire_param_changed)
         self.spin_wire_width = QSpinBox()
@@ -760,11 +893,13 @@ class RTLEditorWidget(QWidget):
         # Canvas Actions
         box_actions = QGroupBox("Acciones del Canvas")
         act_layout = QVBoxLayout(box_actions)
+        act_layout.setContentsMargins(8, 8, 8, 8)
+        act_layout.setSpacing(4)
 
         btn_reroute = QPushButton("🔄 Re-enrutar Cable (R)")
         btn_relabel = QPushButton("🏷️ Restablecer Etiquetas (Shift+R)")
         btn_edit_block = QPushButton("⚙️ Configurar Componente")
-        btn_edit_block.setToolTip("Configurar propiedades del bloque funcional, MUX, desagregador u operador seleccionado")
+        btn_edit_block.setToolTip("Configurar propiedades del bloque funcional, MUX, desagregador, operador o puerto seleccionado")
         btn_mirror = QPushButton("🪞 Reflejar Bloque (Ctrl+E)")
         btn_mirror.setToolTip("Refleja horizontalmente los bloques seleccionados, invirtiendo pines de entrada y salida (Ctrl+E)")
         btn_copy = QPushButton("📋 Copiar (Ctrl+C)")
@@ -772,7 +907,7 @@ class RTLEditorWidget(QWidget):
         btn_paste = QPushButton("📥 Pegar (Ctrl+V)")
         btn_paste.setToolTip("Pegar elementos del portapapeles con desplazamiento (Ctrl+V)")
         btn_params = QPushButton("📐 Parámetros del Esquemático...")
-        btn_params.setStyleSheet("font-weight: bold; background: #eef4fc; color: #0056b3; border: 1px solid #b8d4f8; padding: 4px;")
+        btn_params.setStyleSheet("font-weight: bold; background: #eef4fc; color: #0056b3; border: 1px solid #b8d4f8; padding: 4px; min-height: 27px;")
         btn_params.setToolTip("Definir parámetros globales como DATA_WIDTH, N, etc. para anchos de bus")
 
         btn_solder = QPushButton("⚫ Colocar Solder Dot (Junction)")
@@ -806,8 +941,17 @@ class RTLEditorWidget(QWidget):
         pal_layout.addWidget(box_actions)
 
         pal_layout.addStretch()
-        palette_panel.setMaximumWidth(280)
-        splitter.addWidget(palette_panel)
+
+        # Wrap in QScrollArea so that palette options are scrollable and never squished
+        palette_scroll = QScrollArea()
+        palette_scroll.setWidgetResizable(True)
+        palette_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        palette_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        palette_scroll.setWidget(palette_panel)
+        palette_scroll.setMinimumWidth(260)
+        palette_scroll.setMaximumWidth(320)
+        palette_scroll.setStyleSheet("QScrollArea { border: none; background: #fafafa; }")
+        splitter.addWidget(palette_scroll)
 
         # -------------------------------------------------------------
         # Center: Graphics Canvas
@@ -925,7 +1069,10 @@ class RTLEditorWidget(QWidget):
                 elif item.model.type == ComponentType.OPERATOR_CIRCLE:
                     self.open_operator_dialog(item)
                     return
-        QMessageBox.information(self, "Aviso", "Seleccione un bloque, multiplexor, desagregador u operador para configurar.")
+                elif item.model.type in (ComponentType.INPUT_PORT, ComponentType.OUTPUT_PORT):
+                    self.open_port_dialog(item)
+                    return
+        QMessageBox.information(self, "Aviso", "Seleccione un bloque, multiplexor, desagregador, operador o puerto para configurar.")
 
     edit_selected_block = edit_selected_component
 
@@ -1165,6 +1312,78 @@ class RTLEditorWidget(QWidget):
             if hasattr(self.scene, "on_component_moved"):
                 self.scene.on_component_moved(comp_item)
             self.lbl_status.setText(f"Operador circular '{comp.label}' actualizado ({bus_w} bits).")
+
+    def open_port_dialog(self, comp_item: RTLComponentItem):
+        comp = comp_item.model
+        dlg = RTLPortConfigDialog(comp, schematic_params=self.scene.schematic.parameters, parent=self)
+        if dlg.exec():
+            self.scene.push_undo_state()
+            new_name = dlg.edit_name.text().strip()
+            if new_name:
+                comp.label = new_name
+            new_w = dlg.spin_width.value()
+            param_name = dlg.combo_param.currentData()
+
+            comp.properties["bus_width"] = str(new_w)
+            if param_name:
+                comp.properties["bus_width_param"] = param_name
+            else:
+                comp.properties.pop("bus_width_param", None)
+
+            for pin in comp.pins:
+                pin.width = new_w
+                pin.width_param = param_name
+
+            # Synchronize bit width of wires connected to this port
+            for w in self.scene.schematic.wires:
+                if (w.source_comp_id == comp.id) or (w.target_comp_id == comp.id):
+                    w.width = new_w
+                    w.width_param = param_name
+
+            comp_item.prepareGeometryChange()
+            comp_item.update()
+            for pi in comp_item.pin_items:
+                pi.update_position()
+                pi.update()
+            for w_item in self.scene.wire_items.values():
+                w_item.prepareGeometryChange()
+                w_item.update()
+
+            self.lbl_status.setText(f"Puerto '{comp.label}' actualizado ({new_w} bits).")
+
+    def spawn_input_port(self):
+        name, ok = QInputDialog.getText(
+            self, "Agregar Puerto de Entrada",
+            "Nombre del puerto (ej: clk_100M, rst, data_in[7:0]):",
+            text="clk_100M"
+        )
+        if not ok or not name.strip():
+            return
+        name = name.strip()
+        width = parse_slice_width(name)
+        center = self.view.mapToScene(self.view.viewport().rect().center())
+        x = round((center.x() - 200) / 20.0) * 20.0
+        y = round(center.y() / 20.0) * 20.0
+        comp = ComponentFactory.create_input_port(x, y, name=name, width=width)
+        item = self.scene.add_component(comp)
+        self.lbl_status.setText(f"Puerto de entrada '{name}' ({width} bit{'s' if width > 1 else ''}) agregado.")
+
+    def spawn_output_port(self):
+        name, ok = QInputDialog.getText(
+            self, "Agregar Puerto de Salida",
+            "Nombre del puerto (ej: out, anodes[7:0], segments[7:0]):",
+            text="anodes[7:0]"
+        )
+        if not ok or not name.strip():
+            return
+        name = name.strip()
+        width = parse_slice_width(name)
+        center = self.view.mapToScene(self.view.viewport().rect().center())
+        x = round((center.x() + 200) / 20.0) * 20.0
+        y = round(center.y() / 20.0) * 20.0
+        comp = ComponentFactory.create_output_port(x, y, name=name, width=width)
+        item = self.scene.add_component(comp)
+        self.lbl_status.setText(f"Puerto de salida '{name}' ({width} bit{'s' if width > 1 else ''}) agregado.")
 
     def spawn_mux(self):
         comp = ComponentFactory.create_mux(0, 0, num_inputs=2, width=1, label="MUX")

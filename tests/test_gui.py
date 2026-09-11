@@ -455,7 +455,58 @@ class TestGUIIntegration(unittest.TestCase):
         scene.schematic.set_parameter("DATA_WIDTH", 16)
         self.assertEqual(w1_item.model.width, 16)
 
+    def test_port_indicators_gui(self):
+        """Test adding and rendering input and output ports in RTL editor"""
+        rtl_tab = self.win.tab_rtl
+        scene = rtl_tab.scene
+
+        # Add 1-bit input port (clk_100M)
+        p_in = ComponentFactory.create_input_port(40, 120, name="clk_100M", width=1)
+        item_in = scene.add_component(p_in)
+        self.assertIn(p_in.id, scene.comp_items)
+        self.assertEqual(item_in.model.type, ComponentType.INPUT_PORT)
+
+        # Add 8-bit bus output port (anodes[7:0])
+        p_out = ComponentFactory.create_output_port(300, 120, name="anodes[7:0]", width=8)
+        item_out = scene.add_component(p_out)
+        self.assertIn(p_out.id, scene.comp_items)
+        self.assertEqual(item_out.model.type, ComponentType.OUTPUT_PORT)
+
+        # Check pin positions are snapped to multiples of 20
+        pos_in_pin = item_in.pin_items[0].scenePos()
+        pos_out_pin = item_out.pin_items[0].scenePos()
+        self.assertEqual(pos_in_pin.y() % 20.0, 0.0)
+        self.assertEqual(pos_out_pin.y() % 20.0, 0.0)
+
+        # Connect wire from input port to output port
+        scene.start_wiring(item_in.pin_items[0])
+        scene.finish_wiring(item_out.pin_items[0])
+        self.assertEqual(len(scene.schematic.wires), 4) # 3 from counter example + 1 new
+
+        # Connected wire inherits bus width 8
+        new_wire = scene.schematic.wires[-1]
+        self.assertEqual(new_wire.width, 8)
+
+    def test_palette_scroll_and_action_buttons(self):
+        """Test that palette is in a QScrollArea and action buttons have comfortable height"""
+        from PySide6.QtWidgets import QScrollArea, QPushButton
+        rtl_tab = self.win.tab_rtl
+
+        # Check QScrollArea exists in rtl_tab
+        scrolls = rtl_tab.findChildren(QScrollArea)
+        self.assertGreaterEqual(len(scrolls), 1)
+        palette_scroll = scrolls[0]
+        self.assertTrue(palette_scroll.widgetResizable())
+
+        # Check buttons exist in palette
+        buttons = rtl_tab.findChildren(QPushButton)
+        self.assertGreaterEqual(len(buttons), 15)
+        # Check stylesheet of palette panel guarantees min-height
+        pal_widget = palette_scroll.widget()
+        self.assertIn("min-height", pal_widget.styleSheet())
+
 
 if __name__ == "__main__":
     unittest.main()
+
 

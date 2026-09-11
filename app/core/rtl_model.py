@@ -24,6 +24,8 @@ class ComponentType(str, Enum):
     BUS_SPLITTER = "BUS_SPLITTER"        # Perpendicular branch bar (Figure 2)
     CONSTANT = "CONSTANT"                # 1'b0, 4'd0, 8'hFF (Figure 9)
     LABEL = "LABEL"                      # Free text annotation
+    INPUT_PORT = "INPUT_PORT"            # Top-level input port symbol (Vivado / ELO212)
+    OUTPUT_PORT = "OUTPUT_PORT"          # Top-level output port symbol (Vivado / ELO212)
 
 
 class PinDirection(str, Enum):
@@ -552,3 +554,58 @@ class ComponentFactory:
             height=max(80.0, max(len(inputs), len(outputs)) * 30.0),
             pins=pins
         )
+
+    @staticmethod
+    def create_input_port(x: float = 0, y: float = 0, name: str = "in_port",
+                          width: int = 1, width_param: Optional[str] = None) -> RTLComponent:
+        comp_id = f"in_{uuid.uuid4().hex[:6]}"
+        pins = [
+            RTLPin(
+                id=f"{comp_id}_out",
+                name="out",
+                direction=PinDirection.OUT,
+                side=PinSide.RIGHT,
+                offset=0.5,
+                width=width,
+                width_param=width_param
+            )
+        ]
+        return RTLComponent(
+            id=comp_id,
+            type=ComponentType.INPUT_PORT,
+            label=name,
+            x=x,
+            y=y,
+            width=24.0,
+            height=40.0,
+            pins=pins,
+            properties={"bus_width": str(width), "bus_width_param": width_param or ""}
+        )
+
+    @staticmethod
+    def create_output_port(x: float = 0, y: float = 0, name: str = "out_port",
+                           width: int = 1, width_param: Optional[str] = None) -> RTLComponent:
+        comp_id = f"out_{uuid.uuid4().hex[:6]}"
+        pins = [
+            RTLPin(
+                id=f"{comp_id}_in",
+                name="in",
+                direction=PinDirection.IN,
+                side=PinSide.LEFT,
+                offset=0.5,
+                width=width,
+                width_param=width_param
+            )
+        ]
+        return RTLComponent(
+            id=comp_id,
+            type=ComponentType.OUTPUT_PORT,
+            label=name,
+            x=x,
+            y=y,
+            width=24.0,
+            height=40.0,
+            pins=pins,
+            properties={"bus_width": str(width), "bus_width_param": width_param or ""}
+        )
+

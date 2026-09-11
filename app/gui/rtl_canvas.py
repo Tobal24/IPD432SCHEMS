@@ -621,6 +621,8 @@ class RTLGraphicsScene(QGraphicsScene):
                 act_edit = menu.addAction("⚙️ Configurar Desagregador de Bus...")
             elif item.model.type == ComponentType.OPERATOR_CIRCLE:
                 act_edit = menu.addAction("⚙️ Configurar Operador...")
+            elif item.model.type in (ComponentType.INPUT_PORT, ComponentType.OUTPUT_PORT):
+                act_edit = menu.addAction("⚙️ Configurar Puerto...")
 
             act_mirror = menu.addAction("🪞 Reflejar Bloque Horizontalmente (Ctrl+E)")
             act_copy = menu.addAction("📋 Copiar Componente (Ctrl+C)")

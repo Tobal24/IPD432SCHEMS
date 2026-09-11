@@ -6,7 +6,8 @@ import unittest
 import os
 import tempfile
 from app.core.rtl_model import (
-    RTLSchematic, RTLComponent, ComponentFactory, ComponentType, RTLWire, RTLJunction
+    RTLSchematic, RTLComponent, ComponentFactory, ComponentType, RTLWire, RTLJunction,
+    PinDirection, PinSide
 )
 
 
@@ -144,6 +145,38 @@ class TestRTLSuite(unittest.TestCase):
         loaded.remove_parameter("DATA_WIDTH")
         self.assertNotIn("DATA_WIDTH", loaded.parameters)
         self.assertIsNone(loaded.wires[0].width_param)
+
+    def test_port_indicators(self):
+        # 1-bit Input Port (clk_100M)
+        in_clk = ComponentFactory.create_input_port(40, 100, name="clk_100M", width=1)
+        self.assertEqual(in_clk.type, ComponentType.INPUT_PORT)
+        self.assertEqual(in_clk.label, "clk_100M")
+        self.assertEqual(len(in_clk.pins), 1)
+        self.assertEqual(in_clk.pins[0].direction, PinDirection.OUT)
+        self.assertEqual(in_clk.pins[0].side, PinSide.RIGHT)
+        self.assertEqual(in_clk.pins[0].width, 1)
+
+        # Bus Output Port (anodes[7:0])
+        out_anodes = ComponentFactory.create_output_port(400, 100, name="anodes[7:0]", width=8)
+        self.assertEqual(out_anodes.type, ComponentType.OUTPUT_PORT)
+        self.assertEqual(out_anodes.label, "anodes[7:0]")
+        self.assertEqual(len(out_anodes.pins), 1)
+        self.assertEqual(out_anodes.pins[0].direction, PinDirection.IN)
+        self.assertEqual(out_anodes.pins[0].side, PinSide.LEFT)
+        self.assertEqual(out_anodes.pins[0].width, 8)
+
+        # Serialization round-trip
+        d_in = in_clk.to_dict()
+        restored_in = RTLComponent.from_dict(d_in)
+        self.assertEqual(restored_in.type, ComponentType.INPUT_PORT)
+        self.assertEqual(restored_in.label, "clk_100M")
+        self.assertEqual(restored_in.pins[0].width, 1)
+
+        d_out = out_anodes.to_dict()
+        restored_out = RTLComponent.from_dict(d_out)
+        self.assertEqual(restored_out.type, ComponentType.OUTPUT_PORT)
+        self.assertEqual(restored_out.label, "anodes[7:0]")
+        self.assertEqual(restored_out.pins[0].width, 8)
 
 
 if __name__ == "__main__":

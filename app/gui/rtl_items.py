@@ -99,6 +99,15 @@ class RTLPinItem(QGraphicsItem):
 
     def paint(self, painter: QPainter, option, widget=None):
         painter.setRenderHint(QPainter.Antialiasing)
+        ctype = self.parent_comp.model.type
+        if ctype in (ComponentType.INPUT_PORT, ComponentType.OUTPUT_PORT):
+            # Suppress default pin circle and redundant pin text; only show hover anchor
+            if self.is_hovered:
+                painter.setBrush(QBrush(QColor(255, 120, 0)))
+                painter.setPen(QPen(QColor(200, 50, 0), 1.5))
+                painter.drawEllipse(QPointF(0, 0), self.RADIUS, self.RADIUS)
+            return
+
         if self.is_hovered:
             painter.setBrush(QBrush(QColor(255, 120, 0)))
             painter.setPen(QPen(QColor(200, 50, 0), 1.5))
@@ -107,7 +116,6 @@ class RTLPinItem(QGraphicsItem):
             painter.setPen(QPen(QColor(40, 40, 40), 1.5))
         painter.drawEllipse(QPointF(0, 0), self.RADIUS, self.RADIUS)
 
-        ctype = self.parent_comp.model.type
         # Suppress redundant output labels that cause visual clutter / collision
         if ctype == ComponentType.OPERATOR_CIRCLE and self.pin.direction == PinDirection.OUT:
             return
@@ -291,6 +299,9 @@ class RTLComponentItem(QGraphicsItem):
                     elif self.model.type == ComponentType.OPERATOR_CIRCLE and hasattr(p, "open_operator_dialog"):
                         p.open_operator_dialog(self)
                         return
+                    elif self.model.type in (ComponentType.INPUT_PORT, ComponentType.OUTPUT_PORT) and hasattr(p, "open_port_dialog"):
+                        p.open_port_dialog(self)
+                        return
                     p = p.parent()
         super().mouseDoubleClickEvent(event)
 
@@ -330,8 +341,20 @@ class RTLComponentItem(QGraphicsItem):
 
     def boundingRect(self) -> QRectF:
         pad = 20.0
-        left_pad = 120.0 if self.model.type == ComponentType.BUS_SPLITTER else pad
-        return QRectF(-left_pad, -pad, self.model.width + left_pad + pad, self.model.height + 2 * pad)
+        ctype = self.model.type
+        if ctype == ComponentType.BUS_SPLITTER:
+            left_pad = 120.0
+            return QRectF(-left_pad, -pad, self.model.width + left_pad + pad, self.model.height + 2 * pad)
+        elif ctype in (ComponentType.INPUT_PORT, ComponentType.OUTPUT_PORT):
+            fm = QFontMetrics(QFont("Segoe UI", 9, QFont.Normal))
+            tw = fm.horizontalAdvance(self.model.label or "") + 16.0
+            is_mirrored = getattr(self.model, "mirrored", False)
+            is_input = (ctype == ComponentType.INPUT_PORT)
+            if (is_input and not is_mirrored) or (not is_input and is_mirrored):
+                return QRectF(-tw - 10, -pad, tw + self.model.width + 20, self.model.height + 2 * pad)
+            else:
+                return QRectF(-10, -pad, self.model.width + tw + 20, self.model.height + 2 * pad)
+        return QRectF(-pad, -pad, self.model.width + 2 * pad, self.model.height + 2 * pad)
 
     def paint(self, painter: QPainter, option, widget=None):
         painter.setRenderHint(QPainter.Antialiasing)
@@ -357,8 +380,85 @@ class RTLComponentItem(QGraphicsItem):
             self._paint_bus_splitter(painter, w, h)
         elif ctype == ComponentType.CONSTANT:
             self._paint_constant(painter, w, h)
+        elif ctype in (ComponentType.INPUT_PORT, ComponentType.OUTPUT_PORT):
+            self._paint_port(painter, w, h, is_input=(ctype == ComponentType.INPUT_PORT))
         else: # BLOCK
             self._paint_generic_block(painter, w, h)
+
+    def _paint_port(self, painter: QPainter, w: float, h: float, is_input: bool):
+        is_mirrored = getattr(self.model, "mirrored", False)
+        # Check if bus: pin width > 1 or bus_width property > 1 or width_param
+        is_bus = False
+        if self.model.pins:
+            p = self.model.pins[0]
+            if p.width > 1 or bool(p.width_param):
+                is_bus = True
+        if not is_bus:
+            bw_prop = self.model.properties.get("bus_width", "1")
+            try:
+                if int(bw_prop) > 1:
+                    is_bus = True
+            except ValueError:
+                pass
+            if self.model.properties.get("bus_width_param"):
+                is_bus = True
+
+        pen_color = QColor(0, 102, 204) if self.isSelected() else QColor(20, 20, 20)
+        # Image 1 (single-bit) is thin 1.6px; Image 2 (bus) is thick 3.2px!
+        pen_w = 3.2 if is_bus else 1.6
+        pen = QPen(pen_color, pen_w, Qt.SolidLine, Qt.SquareCap, Qt.MiterJoin)
+        painter.setPen(pen)
+        painter.setBrush(QBrush(QColor(255, 255, 255)))
+
+        # Symbol dimensions: height = 18px (from y=11 to y=29, center=20), width=24px (body=16px, tip=8px)
+        y_top = 11.0
+        y_bot = 29.0
+        y_mid = 20.0
+        x_left = 0.0
+        x_body = 16.0
+        x_tip = 24.0
+
+        pointing_right = (not is_mirrored)
+        if pointing_right:
+            poly = QPolygonF([
+                QPointF(x_left, y_top),
+                QPointF(x_body, y_top),
+                QPointF(x_tip, y_mid),
+                QPointF(x_body, y_bot),
+                QPointF(x_left, y_bot),
+            ])
+        else:
+            poly = QPolygonF([
+                QPointF(x_tip, y_top),
+                QPointF(x_tip - x_body, y_top),
+                QPointF(x_left, y_mid),
+                QPointF(x_tip - x_body, y_bot),
+                QPointF(x_tip, y_bot),
+            ])
+
+        painter.drawPolygon(poly)
+
+        # Draw Port Label Text
+        label = self.model.label or ""
+        if label:
+            font = QFont("Segoe UI", 9, QFont.Normal)
+            painter.setFont(font)
+            fm = painter.fontMetrics()
+            tw = fm.horizontalAdvance(label)
+            th = fm.height()
+
+            painter.setPen(QPen(QColor(20, 20, 20)))
+
+            # Input (pointing right): text on left (Image 1)
+            # Output (pointing right): text on right (Image 2)
+            # If mirrored: inverted
+            text_on_left = (is_input and not is_mirrored) or (not is_input and is_mirrored)
+            if text_on_left:
+                text_rect = QRectF(-tw - 8, y_mid - th / 2, tw + 4, th)
+                painter.drawText(text_rect, Qt.AlignRight | Qt.AlignVCenter, label)
+            else:
+                text_rect = QRectF(x_tip + 8, y_mid - th / 2, tw + 4, th)
+                painter.drawText(text_rect, Qt.AlignLeft | Qt.AlignVCenter, label)
 
     def _paint_mux(self, painter: QPainter, w: float, h: float):
         if getattr(self.model, "mirrored", False):
