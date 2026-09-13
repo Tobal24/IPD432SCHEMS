@@ -8,6 +8,7 @@ Features:
 """
 
 import math
+import re
 from typing import Dict, List, Optional
 from PySide6.QtCore import Qt, QRectF, QPointF, QLineF, Signal
 from PySide6.QtGui import (
@@ -19,7 +20,7 @@ from PySide6.QtWidgets import (
     QTableWidgetItem, QHeaderView, QLabel, QTextEdit, QListWidget,
     QListWidgetItem, QGraphicsView, QGraphicsScene, QGraphicsItem,
     QGraphicsPathItem, QGraphicsTextItem, QMessageBox, QFileDialog,
-    QCheckBox, QTabWidget
+    QCheckBox, QTabWidget, QDialog
 )
 
 from app.core.fsm_model import (
@@ -29,14 +30,87 @@ from app.core.fsm_validator import FSMValidator, ValidationIssue
 from app.core.sv_generator import SystemVerilogGenerator
 
 
+class StateOutputsDialog(QDialog):
+    """Configuration dialog for Moore outputs of an FSM state"""
+
+    def __init__(self, state: State, parent=None):
+        super().__init__(parent)
+        self.state = state
+        self.setWindowTitle(f"Configurar Salidas Moore: Estado {state.name}")
+        self.resize(420, 340)
+        layout = QVBoxLayout(self)
+
+        lbl_info = QLabel(f"Defina las señales de salida y sus valores para el estado <b>{state.name}</b>:")
+        layout.addWidget(lbl_info)
+
+        self.table = QTableWidget(0, 2)
+        self.table.setHorizontalHeaderLabels(["Señal de Salida", "Valor Asignado (ej: 1'b1, 2'b00)"])
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Interactive)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.table.setColumnWidth(0, 160)
+        layout.addWidget(self.table)
+
+        # Populate
+        for k, v in sorted(state.moore_outputs.items()):
+            r = self.table.rowCount()
+            self.table.insertRow(r)
+            self.table.setItem(r, 0, QTableWidgetItem(k))
+            self.table.setItem(r, 1, QTableWidgetItem(v))
+
+        btn_row = QHBoxLayout()
+        btn_add = QPushButton("➕ Agregar Salida")
+        btn_del = QPushButton("➖ Eliminar Salida")
+        btn_add.clicked.connect(self._add_row)
+        btn_del.clicked.connect(self._del_row)
+        btn_row.addWidget(btn_add)
+        btn_row.addWidget(btn_del)
+        btn_row.addStretch()
+        layout.addLayout(btn_row)
+
+        dlg_btns = QHBoxLayout()
+        btn_ok = QPushButton("Aplicar Cambios")
+        btn_ok.setStyleSheet("font-weight: bold; background: #0066cc; color: white; padding: 6px;")
+        btn_cancel = QPushButton("Cancelar")
+        btn_ok.clicked.connect(self.accept)
+        btn_cancel.clicked.connect(self.reject)
+        dlg_btns.addStretch()
+        dlg_btns.addWidget(btn_cancel)
+        dlg_btns.addWidget(btn_ok)
+        layout.addLayout(dlg_btns)
+
+    def _add_row(self):
+        r = self.table.rowCount()
+        self.table.insertRow(r)
+        self.table.setItem(r, 0, QTableWidgetItem(f"out_{r}"))
+        self.table.setItem(r, 1, QTableWidgetItem("1'b1"))
+
+    def _del_row(self):
+        r = self.table.currentRow()
+        if r >= 0:
+            self.table.removeRow(r)
+
+    def get_outputs(self) -> Dict[str, str]:
+        res = {}
+        for r in range(self.table.rowCount()):
+            k_item = self.table.item(r, 0)
+            v_item = self.table.item(r, 1)
+            k = k_item.text().strip() if k_item else ""
+            v = v_item.text().strip() if v_item else ""
+            if k:
+                res[k] = v or "1'b0"
+        return res
+
+
 class FSMStateCircleItem(QGraphicsItem):
     """
     State circle complying strictly with IPD432 conventions:
     - Moore: circle divided by horizontal line (Top: State Name, Bottom: Output values)
     - Mealy: circle with State Name (outputs on transitions)
     - Draggable for clean report layouts
+    - Dynamic radius: auto-scales when a state has > 2 outputs so they never run out of space
     """
-    RADIUS = 42.0
+    BASE_RADIUS = 42.0
+    RADIUS = 42.0  # Backwards compatibility
 
     def __init__(self, state: State, fsm: FSM, parent_scene=None):
         super().__init__()
@@ -50,13 +124,31 @@ class FSMStateCircleItem(QGraphicsItem):
         self.setPos(state.x, state.y)
         self.setZValue(2)
 
+    @property
+    def radius(self) -> float:
+        if self.fsm.fsm_type == FSMType.MOORE and self.state.moore_outputs:
+            num_outs = len(self.state.moore_outputs)
+            max_len = max((len(f"{k} = {v}") for k, v in self.state.moore_outputs.items()), default=0)
+            if num_outs <= 2 and max_len <= 12:
+                return self.BASE_RADIUS
+            # Vertical space in lower hemisphere (Consolas font ~13-14px per line)
+            r_h = 16.0 + num_outs * 13.0
+            # Horizontal space (chord width near bottom line)
+            r_w = (max_len * 6.0 + 10.0) / 1.4
+            return max(self.BASE_RADIUS, r_h, r_w)
+        elif self.fsm.fsm_type == FSMType.MEALY:
+            name_len = len(self.state.name)
+            return max(self.BASE_RADIUS, name_len * 5.0)
+        return self.BASE_RADIUS
+
     def shape(self) -> QPainterPath:
         path = QPainterPath()
-        path.addEllipse(QPointF(0, 0), self.RADIUS, self.RADIUS)
+        r = self.radius
+        path.addEllipse(QPointF(0, 0), r, r)
         return path
 
     def boundingRect(self) -> QRectF:
-        r = self.RADIUS + 3
+        r = self.radius + 3
         return QRectF(-r, -r, 2 * r, 2 * r)
 
     def itemChange(self, change, value):
@@ -68,9 +160,28 @@ class FSMStateCircleItem(QGraphicsItem):
                 self.scene().update_transitions()
         return super().itemChange(change, value)
 
+    def mouseDoubleClickEvent(self, event):
+        if self.fsm.fsm_type == FSMType.MOORE:
+            parent_view = self.scene().views()[0] if self.scene() and self.scene().views() else None
+            w = parent_view
+            while w and not isinstance(w, FSMDesignerWidget):
+                w = w.parentWidget()
+            if w:
+                w.open_state_outputs_dialog(self.state)
+            else:
+                dlg = StateOutputsDialog(self.state, parent_view)
+                if dlg.exec():
+                    self.state.moore_outputs = dlg.get_outputs()
+                    if self.scene():
+                        self.scene().rebuild_scene()
+            if event:
+                event.accept()
+                return
+        super().mouseDoubleClickEvent(event)
+
     def paint(self, painter: QPainter, option, widget=None):
         painter.setRenderHint(QPainter.Antialiasing)
-        r = self.RADIUS
+        r = self.radius
         rect = QRectF(-r, -r, 2 * r, 2 * r)
 
         # Background and outline
@@ -84,7 +195,8 @@ class FSMStateCircleItem(QGraphicsItem):
             painter.drawLine(QLineF(-r, 0, r, 0))
 
             # Top: State ID
-            painter.setFont(QFont("Segoe UI", 10, QFont.Bold))
+            top_fsize = 10 if r <= 50 else (11 if r <= 65 else 12)
+            painter.setFont(QFont("Segoe UI", top_fsize, QFont.Bold))
             painter.drawText(QRectF(-r, -r, 2 * r, r), Qt.AlignCenter, self.state.name)
 
             # Bottom: Outputs
@@ -93,11 +205,14 @@ class FSMStateCircleItem(QGraphicsItem):
                 out_lines.append(f"{k} = {v}")
             out_text = "\n".join(out_lines) if out_lines else "(none)"
 
-            painter.setFont(QFont("Consolas", 8, QFont.Normal))
-            painter.drawText(QRectF(-r + 2, 2, 2 * r - 4, r - 4), Qt.AlignCenter, out_text)
+            f_size = 8 if len(out_lines) <= 2 else (8 if len(out_lines) <= 4 else 7)
+            painter.setFont(QFont("Consolas", f_size, QFont.Normal))
+            out_rect = QRectF(-r + 4, 4, 2 * r - 8, r - 8)
+            painter.drawText(out_rect, Qt.AlignCenter, out_text)
 
         else: # MEALY
-            painter.setFont(QFont("Segoe UI", 11, QFont.Bold))
+            top_fsize = 11 if r <= 50 else 12
+            painter.setFont(QFont("Segoe UI", top_fsize, QFont.Bold))
             painter.drawText(rect, Qt.AlignCenter, self.state.name)
 
 
@@ -205,7 +320,8 @@ class FSMTransitionItem(QGraphicsPathItem):
         self.prepareGeometryChange()
         p1 = self.src_item.scenePos()
         p2 = self.dst_item.scenePos()
-        r = FSMStateCircleItem.RADIUS
+        r1 = getattr(self.src_item, "radius", FSMStateCircleItem.BASE_RADIUS)
+        r2 = getattr(self.dst_item, "radius", FSMStateCircleItem.BASE_RADIUS)
         self._prepare_label_text()
 
         path = QPainterPath()
@@ -217,10 +333,10 @@ class FSMTransitionItem(QGraphicsPathItem):
             # Arch cleanly above the state circle without touching labels or perimeter
             rad_exit = math.radians(130)
             rad_enter = math.radians(50)
-            start_pt = QPointF(p1.x() + r * math.cos(rad_exit), p1.y() - r * math.sin(rad_exit))
-            end_pt = QPointF(p1.x() + r * math.cos(rad_enter), p1.y() - r * math.sin(rad_enter))
+            start_pt = QPointF(p1.x() + r1 * math.cos(rad_exit), p1.y() - r1 * math.sin(rad_exit))
+            end_pt = QPointF(p1.x() + r1 * math.cos(rad_enter), p1.y() - r1 * math.sin(rad_enter))
 
-            loop_h = 50.0
+            loop_h = max(50.0, r1 * 0.9)
             c1 = QPointF(start_pt.x() - 15, start_pt.y() - loop_h)
             c2 = QPointF(end_pt.x() + 15, end_pt.y() - loop_h)
 
@@ -230,7 +346,7 @@ class FSMTransitionItem(QGraphicsPathItem):
 
             self.arrow_tip = end_pt
             self.arrow_angle = 120.0
-            self.label_pos = QPointF(p1.x(), p1.y() - r - loop_h - 10)
+            self.label_pos = QPointF(p1.x(), p1.y() - r1 - loop_h - 10)
             return
 
         # -------------------------------------------------------------
@@ -260,9 +376,12 @@ class FSMTransitionItem(QGraphicsPathItem):
             t = ((ox - p1.x()) * dx + (oy - p1.y()) * dy) / (dist * dist)
             if 0.08 < t < 0.92:
                 perp = abs(dx * (p1.y() - oy) - dy * (p1.x() - ox)) / dist
-                if perp < (r + 45.0):
+                other_r = FSMStateCircleItem.BASE_RADIUS
+                if self.scene() and hasattr(self.scene(), "state_items") and other.name in self.scene().state_items:
+                    other_r = getattr(self.scene().state_items[other.name], "radius", FSMStateCircleItem.BASE_RADIUS)
+                if perp < (other_r + 45.0):
                     has_obstacle = True
-                    req = (r + 65.0) - perp
+                    req = (other_r + 65.0) - perp
                     if req > max_req_clearance:
                         max_req_clearance = req
 
@@ -308,8 +427,8 @@ class FSMTransitionItem(QGraphicsPathItem):
         angle_to_ctrl_1 = math.atan2(ctrl_y - p1.y(), ctrl_x - p1.x())
         angle_to_ctrl_2 = math.atan2(ctrl_y - p2.y(), ctrl_x - p2.x())
 
-        start_pt = QPointF(p1.x() + r * math.cos(angle_to_ctrl_1), p1.y() + r * math.sin(angle_to_ctrl_1))
-        end_pt = QPointF(p2.x() + r * math.cos(angle_to_ctrl_2), p2.y() + r * math.sin(angle_to_ctrl_2))
+        start_pt = QPointF(p1.x() + r1 * math.cos(angle_to_ctrl_1), p1.y() + r1 * math.sin(angle_to_ctrl_1))
+        end_pt = QPointF(p2.x() + r2 * math.cos(angle_to_ctrl_2), p2.y() + r2 * math.sin(angle_to_ctrl_2))
 
         path.moveTo(start_pt)
         path.quadTo(ctrl_pt, end_pt)
@@ -378,13 +497,13 @@ class FSMResetArrowItem(QGraphicsItem):
         self.setPos(self.init_item.scenePos())
 
     def boundingRect(self) -> QRectF:
-        r = FSMStateCircleItem.RADIUS
+        r = getattr(self.init_item, "radius", FSMStateCircleItem.BASE_RADIUS)
         # Local bounding box relative to state center
         return QRectF(-r - 95, -r - 50, 110, 70)
 
     def paint(self, painter: QPainter, option, widget=None):
         painter.setRenderHint(QPainter.Antialiasing)
-        r = FSMStateCircleItem.RADIUS
+        r = getattr(self.init_item, "radius", FSMStateCircleItem.BASE_RADIUS)
 
         # Arrow from upper left into circle in local coordinates
         start_pt = QPointF(-r - 45, -r - 25)
@@ -618,14 +737,24 @@ class FSMDesignerWidget(QWidget):
         s_layout = QVBoxLayout(states_w)
         self.table_states = QTableWidget(0, 3)
         self.table_states.setHorizontalHeaderLabels(["Nombre Estado", "Es Reset?", "Salidas Moore (ej: P=1'b1)"])
-        self.table_states.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.table_states.setColumnWidth(0, 110)
+        self.table_states.setColumnWidth(1, 75)
+        self.table_states.horizontalHeader().setSectionResizeMode(0, QHeaderView.Interactive)
+        self.table_states.horizontalHeader().setSectionResizeMode(1, QHeaderView.Fixed)
+        self.table_states.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        self.table_states.cellDoubleClicked.connect(self._on_state_cell_double_clicked)
+
         s_btn_layout = QHBoxLayout()
         btn_add_state = QPushButton("+ Agregar Estado")
         btn_del_state = QPushButton("- Eliminar Estado")
+        btn_edit_outs = QPushButton("✏️ Configurar Salidas...")
+        btn_edit_outs.setToolTip("Abre una ventana para gestionar cómodamente las salidas Moore del estado seleccionado")
         btn_add_state.clicked.connect(self.add_state)
         btn_del_state.clicked.connect(self.del_state)
+        btn_edit_outs.clicked.connect(self.edit_selected_state_outputs)
         s_btn_layout.addWidget(btn_add_state)
         s_btn_layout.addWidget(btn_del_state)
+        s_btn_layout.addWidget(btn_edit_outs)
         s_layout.addWidget(self.table_states)
         s_layout.addLayout(s_btn_layout)
         table_tabs.addTab(states_w, "Estados")
@@ -737,8 +866,11 @@ class FSMDesignerWidget(QWidget):
             self.table_states.setItem(row, 0, QTableWidgetItem(s.name))
             init_item = QTableWidgetItem("Sí" if s.is_initial else "No")
             self.table_states.setItem(row, 1, init_item)
-            out_str = ", ".join([f"{k}={v}" for k, v in s.moore_outputs.items()])
-            self.table_states.setItem(row, 2, QTableWidgetItem(out_str))
+            out_str = ", ".join([f"{k}={v}" for k, v in sorted(s.moore_outputs.items())])
+            out_item = QTableWidgetItem(out_str)
+            if s.moore_outputs:
+                out_item.setToolTip(f"Salidas de {s.name} (Doble clic para editar):\n" + "\n".join([f"  • {k} = {v}" for k, v in sorted(s.moore_outputs.items())]))
+            self.table_states.setItem(row, 2, out_item)
         self.table_states.blockSignals(False)
 
     def _sync_states_from_table(self):
@@ -756,7 +888,7 @@ class FSMDesignerWidget(QWidget):
                 s.is_initial = (init_item.text().strip().lower() in ("sí", "si", "yes", "true", "1"))
             if outs_item:
                 outs_dict = {}
-                pairs = outs_item.text().split(",")
+                pairs = [p.strip() for p in re.split(r'[,;\n]+', outs_item.text()) if p.strip()]
                 for p in pairs:
                     if "=" in p:
                         k, v = p.split("=", 1)
@@ -764,6 +896,24 @@ class FSMDesignerWidget(QWidget):
                 s.moore_outputs = outs_dict
 
         self.fsm_scene.rebuild_scene()
+
+    def _on_state_cell_double_clicked(self, row: int, col: int):
+        if col == 2 and 0 <= row < len(self.fsm.states):
+            self.open_state_outputs_dialog(self.fsm.states[row])
+
+    def open_state_outputs_dialog(self, state: State):
+        dlg = StateOutputsDialog(state, self)
+        if dlg.exec():
+            state.moore_outputs = dlg.get_outputs()
+            self._populate_states_table()
+            self.fsm_scene.rebuild_scene()
+
+    def edit_selected_state_outputs(self):
+        r = self.table_states.currentRow()
+        if 0 <= r < len(self.fsm.states):
+            self.open_state_outputs_dialog(self.fsm.states[r])
+        else:
+            QMessageBox.information(self, "Aviso", "Seleccione un estado en la tabla para configurar sus salidas.")
 
     def _populate_trans_table(self):
         self.table_trans.blockSignals(True)

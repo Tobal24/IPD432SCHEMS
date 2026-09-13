@@ -797,6 +797,99 @@ class TestGUIIntegration(unittest.TestCase):
         w_const.paint(p2, None, None)
         p2.end()
 
+    def test_mux_configurable_dimensions(self):
+        """Test that MUX width and height can be configured safely without pin collisions"""
+        rtl_tab = self.win.tab_rtl
+        scene = rtl_tab.scene
+
+        mux = ComponentFactory.create_mux(100, 100, num_inputs=4, mux_w=65.0, mux_h=120.0)
+        self.assertEqual(mux.width, 65.0)
+        self.assertEqual(mux.height, 120.0)
+
+        item = scene.add_component(mux)
+        self.assertIn(mux.id, scene.comp_items)
+
+        # Check all pin positions are distinct
+        positions = [p.scenePos() for p in item.pin_items]
+        coords = [(p.x(), p.y()) for p in positions]
+        self.assertEqual(len(coords), len(set(coords)), "All pin coordinates on MUX must be distinct")
+
+        # Resize MUX to new width and height
+        item.prepareGeometryChange()
+        item.model.width = 40.0
+        item.model.height = 100.0
+        item.rebuild_pins()
+        scene.on_component_moved(item)
+
+        new_positions = [p.scenePos() for p in item.pin_items]
+        new_coords = [(p.x(), p.y()) for p in new_positions]
+        self.assertEqual(len(new_coords), len(set(new_coords)), "Resized MUX pins must maintain non-colliding coordinates")
+
+    def test_mux_sel_label_hidden_but_port_retained(self):
+        """Test that MUX 'sel' port exists and is wireable, but does not draw 'sel' label"""
+        rtl_tab = self.win.tab_rtl
+        scene = rtl_tab.scene
+
+        mux = ComponentFactory.create_mux(200, 200, num_inputs=2)
+        item = scene.add_component(mux)
+
+        # Pin exists
+        sel_pin_item = next((p for p in item.pin_items if p.pin.name == "sel"), None)
+        self.assertIsNotNone(sel_pin_item)
+        self.assertEqual(sel_pin_item.pin.direction, PinDirection.CONTROL)
+
+        # Painting runs cleanly
+        from PySide6.QtGui import QImage, QPainter
+        img = QImage(100, 100, QImage.Format_ARGB32)
+        p = QPainter(img)
+        sel_pin_item.paint(p, None, None)
+        p.end()
+
+        # Wiring from sel pin works
+        scene.start_wiring(sel_pin_item)
+        self.assertTrue(scene.wiring_active)
+        self.assertEqual(scene.wire_start_pin, sel_pin_item)
+        scene.cancel_wiring()
+
+    def test_fsm_multi_output_dynamic_radius(self):
+        """Test that FSM state circle expands dynamically for > 2 outputs to avoid running out of space"""
+        fsm_tab = self.win.tab_fsm
+        fsm_tab.load_traffic_preset()
+        scene = fsm_tab.fsm_scene
+
+        s0_item = scene.state_items["S0"]
+        # Standard Moore state with 2 outputs (LA, LB) has base radius 42.0
+        self.assertEqual(len(s0_item.state.moore_outputs), 2)
+        self.assertEqual(s0_item.radius, 42.0)
+
+        # Add 3rd output
+        s0_item.state.moore_outputs["LC"] = "1'b1"
+        r_3 = s0_item.radius
+        self.assertGreater(r_3, 42.0)
+
+        # Add 4th output
+        s0_item.state.moore_outputs["TIMER_EN"] = "1'b1"
+        r_4 = s0_item.radius
+        self.assertGreater(r_4, r_3)
+
+        # Add 5th output
+        s0_item.state.moore_outputs["ALARM"] = "1'b0"
+        r_5 = s0_item.radius
+        self.assertGreater(r_5, r_4)
+
+        # Rebuild scene and verify transition attaches to expanded radius
+        scene.rebuild_scene()
+        new_s0 = scene.state_items["S0"]
+        self.assertEqual(new_s0.radius, r_5)
+
+        # Check StateOutputsDialog
+        from app.gui.fsm_view import StateOutputsDialog
+        dlg = StateOutputsDialog(new_s0.state)
+        outs = dlg.get_outputs()
+        self.assertEqual(len(outs), 5)
+        self.assertIn("LC", outs)
+        self.assertIn("TIMER_EN", outs)
+
 
 if __name__ == "__main__":
     unittest.main()

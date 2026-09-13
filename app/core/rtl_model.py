@@ -321,7 +321,8 @@ class ComponentFactory:
     @staticmethod
     def create_mux(x: float = 0, y: float = 0, num_inputs: int = 2, width: int = 1,
                    label: str = "MUX", input_names: Optional[List[str]] = None,
-                   sel_side: str = "BOTTOM") -> RTLComponent:
+                   sel_side: str = "BOTTOM", mux_w: Optional[float] = None,
+                   mux_h: Optional[float] = None) -> RTLComponent:
         comp_id = f"mux_{uuid.uuid4().hex[:6]}"
         pins = []
         if input_names:
@@ -331,7 +332,16 @@ class ComponentFactory:
 
         # Calculate width needed for input labels
         max_label_len = max((len(n) for n in input_names), default=1)
-        mux_w = max(50.0, 25.0 + max_label_len * 10.0 + 10.0)
+        if mux_w is not None:
+            final_w = max(30.0, float(mux_w))
+        else:
+            final_w = max(50.0, 25.0 + max_label_len * 10.0 + 10.0)
+
+        min_allowed_h = max(40.0, num_inputs * 15.0)
+        if mux_h is not None:
+            final_h = max(min_allowed_h, float(mux_h))
+        else:
+            final_h = max(80.0, num_inputs * 30.0)
 
         # Input pins on left (wide side)
         for i, in_name in enumerate(input_names):
@@ -369,8 +379,8 @@ class ComponentFactory:
             label=label,
             x=x,
             y=y,
-            width=mux_w,
-            height=max(80.0, num_inputs * 30.0),
+            width=final_w,
+            height=final_h,
             pins=pins,
             properties={
                 "num_inputs": str(num_inputs),

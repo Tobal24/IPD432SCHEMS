@@ -57,26 +57,26 @@ class RTLPinItem(QGraphicsItem):
         if ctype == ComponentType.MUX:
             if not is_mirrored:
                 if side == PinSide.LEFT:
-                    pos = QPointF(0, snap(h * off))
+                    pos = QPointF(0, h * off)
                 elif side == PinSide.RIGHT:
-                    pos = QPointF(w, snap(h * 0.2 + (h * 0.6) * off))
+                    pos = QPointF(w, h * 0.2 + (h * 0.6) * off)
                 elif side == PinSide.TOP:
                     y_edge = (h * 0.2) * off
-                    pos = QPointF(snap(w * off), y_edge)
+                    pos = QPointF(w * off, y_edge)
                 else: # BOTTOM
                     y_edge = h - (h * 0.2) * off
-                    pos = QPointF(snap(w * off), y_edge)
+                    pos = QPointF(w * off, y_edge)
             else:
                 if side == PinSide.LEFT:
-                    pos = QPointF(0, snap(h * 0.2 + (h * 0.6) * off))
+                    pos = QPointF(0, h * 0.2 + (h * 0.6) * off)
                 elif side == PinSide.RIGHT:
-                    pos = QPointF(w, snap(h * off))
+                    pos = QPointF(w, h * off)
                 elif side == PinSide.TOP:
                     y_edge = (h * 0.2) * (1.0 - off)
-                    pos = QPointF(snap(w * off), y_edge)
+                    pos = QPointF(w * off, y_edge)
                 else: # BOTTOM
                     y_edge = h - (h * 0.2) * (1.0 - off)
-                    pos = QPointF(snap(w * off), y_edge)
+                    pos = QPointF(w * off, y_edge)
         elif ctype == ComponentType.OPERATOR_CIRCLE:
             if side == PinSide.LEFT:
                 pos = QPointF(0, h * off)
@@ -131,6 +131,8 @@ class RTLPinItem(QGraphicsItem):
         if ctype == ComponentType.BUS_SPLITTER and self.pin.direction == PinDirection.OUT:
             return
         if ctype == ComponentType.MUX and self.pin.direction == PinDirection.OUT and self.pin.name == "out":
+            return
+        if ctype == ComponentType.MUX and (self.pin.name.lower() == "sel" or self.pin.direction == PinDirection.CONTROL):
             return
 
         # Draw pin label

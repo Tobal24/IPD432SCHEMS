@@ -700,10 +700,12 @@ class RTLGraphicsScene(QGraphicsScene):
             act_edit = None
             act_rotate = None
             act_resize_op = None
+            act_resize_mux = None
             if item.model.type == ComponentType.BLOCK:
                 act_edit = menu.addAction("⚙️ Configurar Bloque (Puertos y Tamaño)...")
             elif item.model.type == ComponentType.MUX:
                 act_edit = menu.addAction("⚙️ Configurar Multiplexor (MUX)...")
+                act_resize_mux = menu.addAction("📐 Cambiar Dimensiones del MUX...")
             elif item.model.type == ComponentType.BUS_SPLITTER:
                 act_edit = menu.addAction("⚙️ Configurar Desagregador de Bus...")
             elif item.model.type == ComponentType.OPERATOR_CIRCLE:
@@ -742,6 +744,29 @@ class RTLGraphicsScene(QGraphicsScene):
                     self.on_component_moved(item)
                     item.update()
                     self.status_message.emit(f"Diámetro del operador actualizado a {val} px.")
+            elif act_resize_mux and action == act_resize_mux:
+                w_val, ok_w = QInputDialog.getInt(
+                    None, "Dimensiones del MUX",
+                    "Ancho en píxeles (30 - 200 px):",
+                    int(item.model.width), 30, 200, 5
+                )
+                if ok_w:
+                    num_in = len([p for p in item.model.pins if p.direction == PinDirection.IN])
+                    min_h = max(40, num_in * 15)
+                    h_val, ok_h = QInputDialog.getInt(
+                        None, "Dimensiones del MUX",
+                        f"Largo / Alto en píxeles ({min_h} - 400 px):",
+                        int(item.model.height), min_h, 400, 10
+                    )
+                    if ok_h:
+                        self.push_undo_state()
+                        item.prepareGeometryChange()
+                        item.model.width = float(w_val)
+                        item.model.height = float(h_val)
+                        item.rebuild_pins()
+                        self.on_component_moved(item)
+                        item.update()
+                        self.status_message.emit(f"Dimensiones del MUX actualizadas a {w_val}x{h_val} px.")
             elif action == act_mirror:
                 if not item.isSelected():
                     self.clearSelection()

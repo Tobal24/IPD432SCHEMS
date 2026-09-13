@@ -206,7 +206,19 @@ class MuxPropertiesDialog(QDialog):
 
         form_gen.addRow("Etiqueta del MUX:", self.edit_label)
         form_gen.addRow("Número de entradas:", self.spin_num_inputs)
-        form_gen.addRow("Ubicación de 'sel':", self.combo_sel_side)
+        form_gen.addRow("Ubicación de selector:", self.combo_sel_side)
+
+        self.spin_width = QSpinBox()
+        self.spin_width.setRange(30, 200)
+        self.spin_width.setValue(int(self.comp.width))
+
+        min_h = max(40, (len(in_pins) if in_pins else 2) * 15)
+        self.spin_height = QSpinBox()
+        self.spin_height.setRange(min_h, 400)
+        self.spin_height.setValue(int(self.comp.height))
+
+        form_gen.addRow("Ancho (px):", self.spin_width)
+        form_gen.addRow("Largo / Alto (px):", self.spin_height)
         layout.addWidget(box_gen)
 
         # Inputs Table
@@ -263,6 +275,10 @@ class MuxPropertiesDialog(QDialog):
         elif new_count < cur_count:
             for i in range(cur_count - 1, new_count - 1, -1):
                 self.table_inputs.removeRow(i)
+        min_h = max(40, new_count * 15)
+        self.spin_height.setMinimum(min_h)
+        if self.spin_height.value() < min_h:
+            self.spin_height.setValue(max(60, new_count * 25))
 
     def _apply_preset_nums(self):
         for r in range(self.table_inputs.rowCount()):
@@ -1188,9 +1204,8 @@ class RTLEditorWidget(QWidget):
             sel_side_str = dlg.get_sel_side()
             s_side = PinSide.TOP if sel_side_str == "TOP" else PinSide.BOTTOM
 
-            max_label_len = max((len(n) for n in input_names), default=1)
-            comp.width = max(50.0, 25.0 + max_label_len * 10.0 + 10.0)
-            comp.height = max(80.0, num_inputs * 30.0)
+            comp.width = float(dlg.spin_width.value())
+            comp.height = float(dlg.spin_height.value())
             comp.properties["num_inputs"] = str(num_inputs)
             comp.properties["input_names"] = json.dumps(input_names)
             comp.properties["sel_side"] = sel_side_str
