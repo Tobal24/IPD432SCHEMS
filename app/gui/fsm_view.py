@@ -50,8 +50,13 @@ class FSMStateCircleItem(QGraphicsItem):
         self.setPos(state.x, state.y)
         self.setZValue(2)
 
+    def shape(self) -> QPainterPath:
+        path = QPainterPath()
+        path.addEllipse(QPointF(0, 0), self.RADIUS, self.RADIUS)
+        return path
+
     def boundingRect(self) -> QRectF:
-        r = self.RADIUS + 15
+        r = self.RADIUS + 3
         return QRectF(-r, -r, 2 * r, 2 * r)
 
     def itemChange(self, change, value):
@@ -405,6 +410,7 @@ class FSMResetArrowItem(QGraphicsItem):
 class FSMGraphicsScene(QGraphicsScene):
     def __init__(self, fsm: FSM, parent=None):
         super().__init__(parent)
+        self.setItemIndexMethod(QGraphicsScene.NoIndex)
         self.fsm = fsm
         self.state_items: Dict[str, FSMStateCircleItem] = {}
         self.trans_items: List[FSMTransitionItem] = []
@@ -570,10 +576,16 @@ class FSMDesignerWidget(QWidget):
         preset_layout = QHBoxLayout(preset_box)
         btn_tmpl_traffic = QPushButton("Semáforo (4 Estados)")
         btn_tmpl_pulse = QPushButton("Conversor Nivel a Pulso")
+        btn_tmpl_mealy = QPushButton("Detector Secuencia '101' (Mealy)")
+        btn_tmpl_traffic.setToolTip("Cargar plantilla de Semáforo de 4 estados (Moore)")
+        btn_tmpl_pulse.setToolTip("Cargar plantilla de Conversor Nivel a Pulso de 3 estados (Moore)")
+        btn_tmpl_mealy.setToolTip("Cargar plantilla de Detector de Secuencia '101' de 3 estados (Mealy)")
         btn_tmpl_traffic.clicked.connect(self.load_traffic_preset)
         btn_tmpl_pulse.clicked.connect(self.load_pulse_preset)
+        btn_tmpl_mealy.clicked.connect(self.load_mealy_preset)
         preset_layout.addWidget(btn_tmpl_traffic)
         preset_layout.addWidget(btn_tmpl_pulse)
+        preset_layout.addWidget(btn_tmpl_mealy)
         left_layout.addWidget(preset_box)
 
         # FSM Parameters
@@ -735,11 +747,22 @@ class FSMDesignerWidget(QWidget):
         splitter.setSizes([520, 680])
 
     def refresh_all(self):
+        # Block signals while programmatically updating controls
+        self.edit_name.blockSignals(True)
+        self.combo_type.blockSignals(True)
+        self.combo_reset.blockSignals(True)
+        self.combo_encoding.blockSignals(True)
+
         # Update inputs
         self.edit_name.setText(self.fsm.name)
         self.combo_type.setCurrentText(self.fsm.fsm_type.value)
         self.combo_reset.setCurrentText(self.reset_type_to_str(self.fsm.reset_type))
         self.combo_encoding.setCurrentText(self.fsm.encoding.value)
+
+        self.edit_name.blockSignals(False)
+        self.combo_type.blockSignals(False)
+        self.combo_reset.blockSignals(False)
+        self.combo_encoding.blockSignals(False)
 
         self._populate_ports_table()
         self._populate_states_table()
@@ -1015,5 +1038,10 @@ class FSMDesignerWidget(QWidget):
 
     def load_pulse_preset(self):
         self.fsm = self._create_default_fsm()
+        self.fsm_scene.fsm = self.fsm
+        self.refresh_all()
+
+    def load_mealy_preset(self):
+        self.fsm = FSM.create_sequence_detector_mealy()
         self.fsm_scene.fsm = self.fsm
         self.refresh_all()

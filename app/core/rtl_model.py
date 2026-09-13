@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Dict, List, Optional, Tuple
 import json
+import math
 import uuid
 import re
 
@@ -461,8 +462,16 @@ class ComponentFactory:
         pins = [
             RTLPin(id=f"{comp_id}_in", name=in_name, direction=PinDirection.IN, side=PinSide.LEFT, offset=0.5, width=in_width)
         ]
+        num_slices = len(slice_list)
+        if num_slices <= 1:
+            comp_h = 80.0
+            branch_offsets = [0.5] if num_slices == 1 else []
+        else:
+            comp_h = max(80.0, float(num_slices * 40))
+            branch_offsets = [(20.0 + idx * 40.0) / comp_h for idx in range(num_slices)]
+
         for idx, s in enumerate(slice_list):
-            offset = (idx + 1) / (len(slice_list) + 1)
+            offset = branch_offsets[idx]
             swidth = parse_slice_width(s)
             slice_label = f"{base_name}{s}" if base_name and not s.startswith(base_name) else s
             pins.append(RTLPin(
@@ -474,7 +483,8 @@ class ComponentFactory:
                 width=swidth
             ))
         max_s_len = max((len(p.name) for p in pins), default=5)
-        comp_w = max(110.0, 45.0 + max_s_len * 8.0)
+        raw_w = max(110.0, 45.0 + max_s_len * 8.0)
+        comp_w = math.ceil(raw_w / 20.0) * 20.0
         return RTLComponent(
             id=comp_id,
             type=ComponentType.BUS_SPLITTER,
@@ -482,7 +492,7 @@ class ComponentFactory:
             x=x,
             y=y,
             width=comp_w,
-            height=max(80.0, len(slice_list) * 40.0),
+            height=comp_h,
             pins=pins,
             properties={"in_width": str(in_width), "slices": slices, "base_name": base_name}
         )

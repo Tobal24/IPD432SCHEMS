@@ -339,22 +339,181 @@ class RTLComponentItem(QGraphicsItem):
                 self.scene().redo_stack.clear()
                 self.scene().status_message.emit("Componente movido. (Ctrl+Z para deshacer)")
 
-    def boundingRect(self) -> QRectF:
-        pad = 20.0
+    def shape(self) -> QPainterPath:
         ctype = self.model.type
-        if ctype == ComponentType.BUS_SPLITTER:
-            left_pad = 120.0
-            return QRectF(-left_pad, -pad, self.model.width + left_pad + pad, self.model.height + 2 * pad)
-        elif ctype in (ComponentType.INPUT_PORT, ComponentType.OUTPUT_PORT):
-            fm = QFontMetrics(QFont("Segoe UI", 9, QFont.Normal))
-            tw = fm.horizontalAdvance(self.model.label or "") + 16.0
-            is_mirrored = getattr(self.model, "mirrored", False)
-            is_input = (ctype == ComponentType.INPUT_PORT)
-            if (is_input and not is_mirrored) or (not is_input and is_mirrored):
-                return QRectF(-tw - 10, -pad, tw + self.model.width + 20, self.model.height + 2 * pad)
+        w = self.model.width
+        h = self.model.height
+        is_mirrored = getattr(self.model, "mirrored", False)
+        path = QPainterPath()
+
+        if ctype == ComponentType.MUX:
+            if is_mirrored:
+                poly = QPolygonF([
+                    QPointF(0, h * 0.2),
+                    QPointF(w, 0),
+                    QPointF(w, h),
+                    QPointF(0, h * 0.8)
+                ])
             else:
-                return QRectF(-10, -pad, self.model.width + tw + 20, self.model.height + 2 * pad)
-        return QRectF(-pad, -pad, self.model.width + 2 * pad, self.model.height + 2 * pad)
+                poly = QPolygonF([
+                    QPointF(0, 0),
+                    QPointF(w, h * 0.2),
+                    QPointF(w, h * 0.8),
+                    QPointF(0, h)
+                ])
+            path.addPolygon(poly)
+
+        elif ctype == ComponentType.OPERATOR_CIRCLE:
+            path.addEllipse(QRectF(0, 0, w, h))
+
+        elif ctype == ComponentType.GATE_AND:
+            g_path = QPainterPath()
+            g_path.moveTo(0, 0)
+            g_path.lineTo(w * 0.5, 0)
+            g_path.arcTo(QRectF(0, 0, w, h), 90, -180)
+            g_path.lineTo(0, h)
+            g_path.closeSubpath()
+            if is_mirrored:
+                t = QTransform().translate(w, 0).scale(-1, 1)
+                g_path = t.map(g_path)
+            path.addPath(g_path)
+
+        elif ctype == ComponentType.GATE_OR:
+            g_path = QPainterPath()
+            g_path.moveTo(0, 0)
+            g_path.quadTo(w * 0.25, h * 0.5, 0, h)
+            g_path.quadTo(w * 0.6, h * 0.95, w, h * 0.5)
+            g_path.quadTo(w * 0.6, h * 0.05, 0, 0)
+            g_path.closeSubpath()
+            if is_mirrored:
+                t = QTransform().translate(w, 0).scale(-1, 1)
+                g_path = t.map(g_path)
+            path.addPath(g_path)
+
+        elif ctype == ComponentType.GATE_NOT:
+            poly = QPolygonF([
+                QPointF(0, 0),
+                QPointF(w - 10, h * 0.5),
+                QPointF(0, h)
+            ])
+            g_path = QPainterPath()
+            g_path.addPolygon(poly)
+            g_path.addEllipse(QRectF(w - 10, h * 0.5 - 4, 8, 8))
+            if is_mirrored:
+                t = QTransform().translate(w, 0).scale(-1, 1)
+                g_path = t.map(g_path)
+            path.addPath(g_path)
+
+        elif ctype == ComponentType.GATE_XOR:
+            p_back = QPainterPath()
+            p_back.moveTo(-6, 0)
+            p_back.quadTo(w * 0.25 - 6, h * 0.5, -6, h)
+            stroker = QPainterPathStroker()
+            stroker.setWidth(8.0)
+            stroke_back = stroker.createStroke(p_back)
+
+            g_path = QPainterPath()
+            g_path.moveTo(0, 0)
+            g_path.quadTo(w * 0.25, h * 0.5, 0, h)
+            g_path.quadTo(w * 0.6, h * 0.95, w, h * 0.5)
+            g_path.quadTo(w * 0.6, h * 0.05, 0, 0)
+            g_path.closeSubpath()
+            g_path.addPath(stroke_back)
+            if is_mirrored:
+                t = QTransform().translate(w, 0).scale(-1, 1)
+                g_path = t.map(g_path)
+            path.addPath(g_path)
+
+        elif ctype in (ComponentType.INPUT_PORT, ComponentType.OUTPUT_PORT):
+            y_top = 11.0
+            y_bot = 29.0
+            y_mid = 20.0
+            x_left = 0.0
+            x_body = 16.0
+            x_tip = 24.0
+            pointing_right = (not is_mirrored)
+            if pointing_right:
+                poly = QPolygonF([
+                    QPointF(x_left, y_top),
+                    QPointF(x_body, y_top),
+                    QPointF(x_tip, y_mid),
+                    QPointF(x_body, y_bot),
+                    QPointF(x_left, y_bot),
+                ])
+            else:
+                poly = QPolygonF([
+                    QPointF(x_tip, y_top),
+                    QPointF(x_tip - x_body, y_top),
+                    QPointF(x_left, y_mid),
+                    QPointF(x_tip - x_body, y_bot),
+                    QPointF(x_tip, y_bot),
+                ])
+            path.addPolygon(poly)
+            label = self.model.label or ""
+            if label:
+                fm = QFontMetrics(QFont("Segoe UI", 9, QFont.Normal))
+                tw = fm.horizontalAdvance(label)
+                th = fm.height()
+                is_input = (ctype == ComponentType.INPUT_PORT)
+                text_on_left = (is_input and not is_mirrored) or (not is_input and is_mirrored)
+                if text_on_left:
+                    text_rect = QRectF(-tw - 8, y_mid - th / 2, tw + 4, th)
+                else:
+                    text_rect = QRectF(x_tip + 8, y_mid - th / 2, tw + 4, th)
+                path.addRect(text_rect)
+
+        elif ctype == ComponentType.BUS_SPLITTER:
+            spine_x = (w - 24.0) if is_mirrored else 24.0
+            out_pins = [p for p in self.model.pins if p.direction == PinDirection.OUT]
+            in_pin = next((p for p in self.model.pins if p.direction == PinDirection.IN), None)
+            if out_pins:
+                min_y = min(snap(h * p.offset) for p in out_pins)
+                max_y = max(snap(h * p.offset) for p in out_pins)
+            else:
+                min_y, max_y = 10.0, h - 10.0
+            in_y = snap(h * in_pin.offset) if in_pin else snap(h * 0.5)
+            min_y = min(min_y, in_y)
+            max_y = max(max_y, in_y)
+
+            spine_w = 8.0
+            path.addRect(QRectF(spine_x - spine_w / 2, min_y - 3, spine_w, (max_y - min_y) + 6))
+
+            stroker = QPainterPathStroker()
+            stroker.setWidth(8.0)
+            wire_path = QPainterPath()
+            if is_mirrored:
+                wire_path.moveTo(w, in_y)
+                wire_path.lineTo(spine_x, in_y)
+                for pin in out_pins:
+                    py = snap(h * pin.offset)
+                    wire_path.moveTo(spine_x, py)
+                    wire_path.lineTo(0, py)
+            else:
+                wire_path.moveTo(0, in_y)
+                wire_path.lineTo(spine_x, in_y)
+                for pin in out_pins:
+                    py = snap(h * pin.offset)
+                    wire_path.moveTo(spine_x, py)
+                    wire_path.lineTo(w, py)
+            path.addPath(stroker.createStroke(wire_path))
+
+            fm = QFontMetrics(QFont("Consolas", 8, QFont.Bold))
+            for pin in out_pins:
+                py = snap(h * pin.offset)
+                tw = fm.horizontalAdvance(pin.name)
+                if is_mirrored:
+                    path.addRect(QRectF(8, py - 16, tw + 4, 14))
+                else:
+                    path.addRect(QRectF(spine_x + 8, py - 16, tw + 4, 14))
+
+        else: # REGISTER, CONSTANT, BLOCK
+            path.addRect(QRectF(0, 0, w, h))
+
+        return path
+
+    def boundingRect(self) -> QRectF:
+        sh_rect = self.shape().boundingRect()
+        return sh_rect.adjusted(-2.0, -2.0, 2.0, 2.0)
 
     def paint(self, painter: QPainter, option, widget=None):
         painter.setRenderHint(QPainter.Antialiasing)
@@ -565,12 +724,12 @@ class RTLComponentItem(QGraphicsItem):
         in_pin = next((p for p in self.model.pins if p.direction == PinDirection.IN), None)
 
         if out_pins:
-            min_y = min(h * p.offset for p in out_pins)
-            max_y = max(h * p.offset for p in out_pins)
+            min_y = min(snap(h * p.offset) for p in out_pins)
+            max_y = max(snap(h * p.offset) for p in out_pins)
         else:
             min_y, max_y = 10.0, h - 10.0
 
-        in_y = h * in_pin.offset if in_pin else h * 0.5
+        in_y = snap(h * in_pin.offset) if in_pin else snap(h * 0.5)
         min_y = min(min_y, in_y)
         max_y = max(max_y, in_y)
 
@@ -599,7 +758,7 @@ class RTLComponentItem(QGraphicsItem):
 
         # Draw output branches
         for pin in out_pins:
-            py = h * pin.offset
+            py = snap(h * pin.offset)
             painter.setPen(QPen(QColor(30, 30, 30), 1.8))
             if is_mirrored:
                 painter.drawLine(QLineF(spine_x, py, 0, py))
@@ -863,6 +1022,7 @@ class RTLWireItem(QGraphicsItem):
 
     def clear_handles(self):
         for h in self.handles:
+            h.setParentItem(None)
             if h.scene():
                 h.scene().removeItem(h)
         self.handles.clear()
@@ -1020,7 +1180,6 @@ class RTLWireItem(QGraphicsItem):
                 painter.setPen(Qt.NoPen)
                 painter.drawPolygon(poly)
 
-        self._sync_label_item()
 
     def _get_longest_segment(self, pts: List[QPointF]) -> Tuple[QPointF, QPointF]:
         longest_seg = (pts[0], pts[1])
@@ -1085,9 +1244,13 @@ class RTLJunctionItem(QGraphicsItem):
         )
         self.setPos(snap(x), snap(y))
         self.setZValue(1)
+    def shape(self) -> QPainterPath:
+        path = QPainterPath()
+        path.addEllipse(QPointF(0, 0), self.RADIUS + 2.0, self.RADIUS + 2.0)
+        return path
 
     def boundingRect(self) -> QRectF:
-        r = self.RADIUS + 6.0
+        r = self.RADIUS + 3.0
         return QRectF(-r, -r, 2 * r, 2 * r)
 
     def itemChange(self, change, value):

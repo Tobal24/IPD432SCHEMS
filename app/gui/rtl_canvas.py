@@ -94,6 +94,7 @@ class RTLGraphicsScene(QGraphicsScene):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setSceneRect(-2000, -2000, 4000, 4000)
+        self.setItemIndexMethod(QGraphicsScene.NoIndex)
         self.schematic = RTLSchematic()
 
         self.comp_items: dict[str, RTLComponentItem] = {}
@@ -113,6 +114,7 @@ class RTLGraphicsScene(QGraphicsScene):
         self.wiring_active = False
         self.wire_start_pin: Optional[RTLPinItem] = None
         self.temp_wire_points: List[Tuple[float, float]] = []
+        self.temp_wire_pos: Optional[QPointF] = None
 
     def push_undo_state(self):
         snapshot = self.schematic.to_dict()
@@ -495,7 +497,26 @@ class RTLGraphicsScene(QGraphicsScene):
     def cancel_wiring(self):
         self.wiring_active = False
         self.wire_start_pin = None
+        self.temp_wire_pos = None
+        self.update()
         self.status_message.emit("Listo.")
+
+    def mouseMoveEvent(self, event):
+        if self.wiring_active and self.wire_start_pin:
+            self.temp_wire_pos = event.scenePos()
+            self.update()
+        super().mouseMoveEvent(event)
+
+    def drawForeground(self, painter: QPainter, rect: QRectF):
+        super().drawForeground(painter, rect)
+        if self.wiring_active and self.wire_start_pin and getattr(self, "temp_wire_pos", None):
+            p1 = self.wire_start_pin.scenePos()
+            p2 = self.temp_wire_pos
+            pts = compute_manhattan_path(p1, self.wire_start_pin.pin.side, p2, PinSide.LEFT)
+            pen = QPen(QColor(0, 102, 204), 1.8, Qt.DashLine)
+            painter.setPen(pen)
+            for i in range(len(pts) - 1):
+                painter.drawLine(QPointF(pts[i][0], pts[i][1]), QPointF(pts[i+1][0], pts[i+1][1]))
 
     def add_junction_at(self, pos: QPointF):
         self.push_undo_state()
@@ -520,8 +541,8 @@ class RTLGraphicsScene(QGraphicsScene):
                     self.finish_wiring(item)
                     return
             elif self.wiring_active:
-                # Cancel if clicked on empty space
                 self.cancel_wiring()
+                super().mousePressEvent(event)
                 return
 
         elif event.button() == Qt.RightButton:
@@ -680,15 +701,30 @@ class RTLGraphicsView(QGraphicsView):
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MiddleButton:
-            self.setDragMode(QGraphicsView.ScrollHandDrag)
-            fake_event = event
-            # simulate left click for drag
-            super().mousePressEvent(event)
+            self._is_panning = True
+            self._pan_start = event.position().toPoint() if hasattr(event, "position") else event.pos()
+            self.setCursor(Qt.ClosedHandCursor)
+            event.accept()
             return
+        if self.dragMode() != QGraphicsView.RubberBandDrag:
+            self.setDragMode(QGraphicsView.RubberBandDrag)
         super().mousePressEvent(event)
 
+    def mouseMoveEvent(self, event):
+        if getattr(self, "_is_panning", False):
+            pos = event.position().toPoint() if hasattr(event, "position") else event.pos()
+            delta = pos - self._pan_start
+            self._pan_start = pos
+            self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() - delta.x())
+            self.verticalScrollBar().setValue(self.verticalScrollBar().value() - delta.y())
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
     def mouseReleaseEvent(self, event):
-        if event.button() == Qt.MiddleButton:
-            self.setDragMode(QGraphicsView.RubberBandDrag)
+        if event.button() == Qt.MiddleButton and getattr(self, "_is_panning", False):
+            self._is_panning = False
+            self.setCursor(Qt.ArrowCursor)
+            event.accept()
             return
         super().mouseReleaseEvent(event)

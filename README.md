@@ -41,6 +41,10 @@ python -m unittest discover -s tests
   * Define puertos de I/O con valores por defecto anti-latch.
   * Configura estados con nombres simbólicos y salidas Moore.
   * Define transiciones con condiciones (`TA == 1'b0`, `else`), temporizadores (`t = T - 1`) y salidas Mealy.
+* **Plantillas Canónicas del Curso:**
+  * **Semáforo (4 Estados - Moore):** Controlador de intersección de vías con sensores `TA`/`TB` y luces `LA`/`LB`.
+  * **Conversor Nivel a Pulso (3 Estados - Moore):** Detector de pulso canónico del curso (slides 35-54).
+  * **Detector de Secuencia '101' (3 Estados - Mealy):** Máquina de Mealy con salidas en las transiciones (`din == 1'b1 / pattern_found=1'b1`), ilustrando el ahorro de estados y la respuesta inmediata característica de Mealy.
 * **Motor de Validación Formal:**
   * Previene la inferencia accidental de *latches*.
   * Comprueba transiciones estrictamente complementarias y deterministas.

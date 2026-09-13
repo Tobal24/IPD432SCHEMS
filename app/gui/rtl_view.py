@@ -5,6 +5,7 @@ and quick example loading.
 """
 
 import json
+import math
 import re
 from typing import Optional, List, Tuple
 from PySide6.QtCore import Qt, QPointF
@@ -21,7 +22,7 @@ from app.core.rtl_model import (
     ComponentType, PinSide, PinDirection, parse_slice_width
 )
 from app.gui.rtl_canvas import RTLGraphicsScene, RTLGraphicsView, compute_manhattan_path
-from app.gui.rtl_items import RTLComponentItem, RTLWireItem
+from app.gui.rtl_items import RTLComponentItem, RTLWireItem, snap
 
 
 class BlockPropertiesDialog(QDialog):
@@ -1209,25 +1210,38 @@ class RTLEditorWidget(QWidget):
 
             from app.core.rtl_model import parse_slice_width
             in_name = f"{base_name}[{in_w-1}:0]" if base_name else f"[{in_w-1}:0]"
+            is_mirrored = getattr(comp, "mirrored", False)
+            in_side = PinSide.RIGHT if is_mirrored else PinSide.LEFT
+            out_side = PinSide.LEFT if is_mirrored else PinSide.RIGHT
+
+            num_slices = len(slice_list)
+            if num_slices <= 1:
+                comp_h = 80.0
+                branch_offsets = [0.5] if num_slices == 1 else []
+            else:
+                comp_h = max(80.0, float(num_slices * 40))
+                branch_offsets = [(20.0 + idx * 40.0) / comp_h for idx in range(num_slices)]
+
             new_pins = [
-                RTLPin(id=f"{comp.id}_in", name=in_name, direction=PinDirection.IN, side=PinSide.LEFT, offset=0.5, width=in_w)
+                RTLPin(id=f"{comp.id}_in", name=in_name, direction=PinDirection.IN, side=in_side, offset=0.5, width=in_w)
             ]
             for idx, s in enumerate(slice_list):
-                offset = (idx + 1) / (len(slice_list) + 1)
+                offset = branch_offsets[idx]
                 swidth = parse_slice_width(s)
                 slice_label = f"{base_name}{s}" if base_name and not s.startswith(base_name) else s
                 new_pins.append(RTLPin(
                     id=f"{comp.id}_out_{idx}",
                     name=slice_label,
                     direction=PinDirection.OUT,
-                    side=PinSide.RIGHT,
+                    side=out_side,
                     offset=offset,
                     width=swidth
                 ))
             comp.label = base_name or "SPLIT"
             max_s_len = max((len(p.name) for p in new_pins), default=5)
-            comp.width = max(110.0, 45.0 + max_s_len * 8.0)
-            comp.height = max(70.0, len(slice_list) * 40.0)
+            raw_w = max(110.0, 45.0 + max_s_len * 8.0)
+            comp.width = math.ceil(raw_w / 20.0) * 20.0
+            comp.height = comp_h
             comp.properties["in_width"] = str(in_w)
             comp.properties["slices"] = slices_str
             comp.properties["base_name"] = base_name
@@ -1351,6 +1365,16 @@ class RTLEditorWidget(QWidget):
 
             self.lbl_status.setText(f"Puerto '{comp.label}' actualizado ({new_w} bits).")
 
+    def _get_spawn_pos(self, offset_x=0.0, offset_y=0.0) -> Tuple[float, float]:
+        center = self.view.mapToScene(self.view.viewport().rect().center())
+        base_x = round((center.x() + offset_x) / 20.0) * 20.0
+        base_y = round((center.y() + offset_y) / 20.0) * 20.0
+        cur_x, cur_y = base_x, base_y
+        while any(snap(c.x) == cur_x and snap(c.y) == cur_y for c in self.scene.schematic.components):
+            cur_x += 40.0
+            cur_y += 40.0
+        return cur_x, cur_y
+
     def spawn_input_port(self):
         name, ok = QInputDialog.getText(
             self, "Agregar Puerto de Entrada",
@@ -1361,9 +1385,7 @@ class RTLEditorWidget(QWidget):
             return
         name = name.strip()
         width = parse_slice_width(name)
-        center = self.view.mapToScene(self.view.viewport().rect().center())
-        x = round((center.x() - 200) / 20.0) * 20.0
-        y = round(center.y() / 20.0) * 20.0
+        x, y = self._get_spawn_pos(offset_x=-200.0, offset_y=0.0)
         comp = ComponentFactory.create_input_port(x, y, name=name, width=width)
         item = self.scene.add_component(comp)
         self.lbl_status.setText(f"Puerto de entrada '{name}' ({width} bit{'s' if width > 1 else ''}) agregado.")
@@ -1378,15 +1400,14 @@ class RTLEditorWidget(QWidget):
             return
         name = name.strip()
         width = parse_slice_width(name)
-        center = self.view.mapToScene(self.view.viewport().rect().center())
-        x = round((center.x() + 200) / 20.0) * 20.0
-        y = round(center.y() / 20.0) * 20.0
+        x, y = self._get_spawn_pos(offset_x=200.0, offset_y=0.0)
         comp = ComponentFactory.create_output_port(x, y, name=name, width=width)
         item = self.scene.add_component(comp)
         self.lbl_status.setText(f"Puerto de salida '{name}' ({width} bit{'s' if width > 1 else ''}) agregado.")
 
     def spawn_mux(self):
-        comp = ComponentFactory.create_mux(0, 0, num_inputs=2, width=1, label="MUX")
+        x, y = self._get_spawn_pos()
+        comp = ComponentFactory.create_mux(x, y, num_inputs=2, width=1, label="MUX")
         item = self.scene.add_component(comp)
         self.open_mux_dialog(item)
 
@@ -1395,44 +1416,51 @@ class RTLEditorWidget(QWidget):
         if not ok: return
         name, ok_n = QInputDialog.getText(self, "Configurar Registro", "Nombre o Etiqueta:", text="Reg")
         if not ok_n: return
-        comp = ComponentFactory.create_register(0, 0, width=width, label=name.strip() or "Reg")
+        x, y = self._get_spawn_pos()
+        comp = ComponentFactory.create_register(x, y, width=width, label=name.strip() or "Reg")
         self.scene.add_component(comp)
         self.lbl_status.setText("Registro agregado.")
 
     def spawn_operator(self):
-        comp = ComponentFactory.create_operator(0, 0, op="+", width=4)
+        x, y = self._get_spawn_pos()
+        comp = ComponentFactory.create_operator(x, y, op="+", width=4)
         item = self.scene.add_component(comp)
         self.open_operator_dialog(item)
 
     def spawn_gate(self):
         gate, ok = QInputDialog.getItem(self, "Compuerta Lógica", "Tipo:", ["AND", "OR", "NOT", "XOR"], 0, False)
         if not ok: return
-        comp = ComponentFactory.create_gate(0, 0, gate_type=gate)
+        x, y = self._get_spawn_pos()
+        comp = ComponentFactory.create_gate(x, y, gate_type=gate)
         self.scene.add_component(comp)
         self.lbl_status.setText(f"Compuerta {gate} agregada.")
 
     def spawn_splitter(self):
-        comp = ComponentFactory.create_bus_splitter(0, 0, in_width=16, slices="[2:0], [3], [15:4]")
+        x, y = self._get_spawn_pos()
+        comp = ComponentFactory.create_bus_splitter(x, y, in_width=16, slices="[2:0], [3], [15:4]")
         item = self.scene.add_component(comp)
         self.open_splitter_dialog(item)
 
     def spawn_constant(self):
         val, ok = QInputDialog.getText(self, "Valor Constante", "Constante HDL (ej: 1'b0, 4'd1, 8'hFF):", text="4'd1")
         if not ok: return
-        comp = ComponentFactory.create_constant(0, 0, val=val)
+        x, y = self._get_spawn_pos()
+        comp = ComponentFactory.create_constant(x, y, val=val)
         self.scene.add_component(comp)
         self.lbl_status.setText(f"Constante {val} agregada.")
 
     def spawn_block(self):
         name, ok = QInputDialog.getText(self, "Bloque Funcional", "Nombre del Módulo:", text="ControlUnit")
         if not ok: return
-        comp = ComponentFactory.create_generic_block(0, 0, name=name)
+        x, y = self._get_spawn_pos()
+        comp = ComponentFactory.create_generic_block(x, y, name=name)
         self.scene.add_component(comp)
         self.lbl_status.setText("Bloque genérico agregado.")
 
     def add_solder_dot(self):
-        self.scene.add_junction_at(QPointF(100, 100))
-        self.lbl_status.setText("Solder dot agregado en (100, 100). Arrástrelo sobre el cruce deseado.")
+        x, y = self._get_spawn_pos()
+        self.scene.add_junction_at(QPointF(x, y))
+        self.lbl_status.setText(f"Solder dot agregado en ({int(x)}, {int(y)}). Arrástrelo sobre el cruce deseado.")
 
     def scene_delete_selected(self):
         self.scene.remove_selected()

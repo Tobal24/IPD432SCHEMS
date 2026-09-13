@@ -97,6 +97,33 @@ class TestFSMSuite(unittest.TestCase):
         errors = [i for i in issues if i.severity == "ERROR" and "latch" in i.message.lower()]
         self.assertTrue(len(errors) > 0, "Validator should detect potential latch")
 
+    def test_mealy_sequence_detector(self):
+        fsm = FSM.create_sequence_detector_mealy()
+        self.assertEqual(fsm.fsm_type, FSMType.MEALY)
+        self.assertEqual(len(fsm.states), 3)
+        self.assertEqual(len(fsm.transitions), 6)
+        self.assertEqual(fsm.get_initial_state().name, "S0")
+
+        # Validation should be clean with 0 errors and 0 warnings
+        issues = FSMValidator.validate(fsm)
+        errors = [i for i in issues if i.severity == "ERROR"]
+        warnings = [i for i in issues if i.severity == "WARNING"]
+        self.assertEqual(len(errors), 0, f"Unexpected validation errors: {errors}")
+        self.assertEqual(len(warnings), 0, f"Unexpected validation warnings: {warnings}")
+
+        # SystemVerilog two_always generation
+        sv_two = SystemVerilogGenerator.generate(fsm, style="two_always")
+        self.assertIn("module seq_detector_101_mealy", sv_two)
+        self.assertIn("typedef enum logic [1:0] {S0, S1, S2} state_t;", sv_two)
+        self.assertIn("pattern_found = 1'b0;", sv_two)
+        self.assertIn("pattern_found = 1'b1;", sv_two)
+
+        # SystemVerilog three_always generation
+        sv_three = SystemVerilogGenerator.generate(fsm, style="three_always")
+        self.assertIn("module seq_detector_101_mealy", sv_three)
+        self.assertIn("pattern_found = 1'b1;", sv_three)
+        self.assertIn("pattern_found = 1'b0;", sv_three)
+
 
 if __name__ == "__main__":
     unittest.main()

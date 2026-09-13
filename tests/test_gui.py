@@ -10,8 +10,8 @@ import unittest
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from PySide6.QtCore import QPointF
-from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import QPointF, QPoint, Qt
+from PySide6.QtWidgets import QApplication, QPushButton
 from app.gui.main_window import MainWindow
 from app.core.rtl_model import ComponentFactory, ComponentType, RTLPin, PinDirection, PinSide
 from app.gui.rtl_items import RTLWireItem, RTLComponentItem
@@ -246,6 +246,52 @@ class TestGUIIntegration(unittest.TestCase):
         self.assertEqual(out_pins[1].width, 1)
         self.assertEqual(out_pins[2].name, "bus_ej[15:4]")
         self.assertEqual(out_pins[2].width, 12)
+
+    def test_bus_splitter_pins_grid_and_wire_alignment(self):
+        """Verifies that bus splitter pins, painted branches, and connected wires are strictly grid-aligned."""
+        scene = self.win.tab_rtl.scene
+        # Create 3-slice splitter as in user's scenario
+        splitter = ComponentFactory.create_bus_splitter(200, 200, in_width=3, slices="[0], [1], [2]")
+        split_item = scene.add_component(splitter)
+
+        # 1. All pin Y positions must be integer multiples of GRID_SIZE (20.0)
+        from app.gui.rtl_items import snap
+        for pi in split_item.pin_items:
+            self.assertEqual(pi.pos().y() % 20.0, 0.0, f"Pin {pi.pin.name} Y {pi.pos().y()} is not on 20px grid!")
+            # Ensure pin item pos matches snap(h * offset)
+            expected_y = snap(split_item.model.height * pi.pin.offset)
+            self.assertEqual(pi.pos().y(), expected_y)
+
+        # 2. Width must also be a multiple of 20.0
+        self.assertEqual(split_item.model.width % 20.0, 0.0)
+
+        # 3. Test mirrored splitter (as in user screenshot where branches are on the left)
+        splitter_mirrored = ComponentFactory.create_bus_splitter(400, 200, in_width=3, slices="[0], [1], [2]")
+        split_mirrored_item = scene.add_component(splitter_mirrored)
+        scene.clearSelection()
+        split_mirrored_item.setSelected(True)
+        scene.reflect_selected_components()
+
+        for pi in split_mirrored_item.pin_items:
+            self.assertEqual(pi.pos().y() % 20.0, 0.0, f"Mirrored Pin {pi.pin.name} Y {pi.pos().y()} is not on 20px grid!")
+            if pi.pin.direction == PinDirection.OUT:
+                self.assertEqual(pi.pos().x(), 0.0)
+            else:
+                self.assertEqual(pi.pos().x(), split_mirrored_item.model.width)
+
+        # 4. Connect a wire to a branch pin and verify endpoint matches exactly
+        in_comp = ComponentFactory.create_constant(0, 200, val="1'b0")
+        in_item = scene.add_component(in_comp)
+        out_branch_pin = next(pi for pi in split_mirrored_item.pin_items if pi.pin.name == "[0]")
+
+        scene.start_wiring(in_item.pin_items[0])
+        scene.finish_wiring(out_branch_pin)
+
+        created_wire = scene.schematic.wires[-1]
+        wire_last_pt = created_wire.points[-1]
+        # Wire endpoint Y must match the branch pin scene pos Y with ZERO gap
+        self.assertEqual(wire_last_pt[1], out_branch_pin.scenePos().y())
+        self.assertEqual(wire_last_pt[0], out_branch_pin.scenePos().x())
 
     def test_operator_circle_output_suppressed(self):
         scene = self.win.tab_rtl.scene
@@ -505,8 +551,157 @@ class TestGUIIntegration(unittest.TestCase):
         pal_widget = palette_scroll.widget()
         self.assertIn("min-height", pal_widget.styleSheet())
 
+    def test_fsm_mealy_preset_gui(self):
+        """Test loading Mealy sequence detector preset in FSM tab and verifying GUI updates"""
+        fsm_tab = self.win.tab_fsm
+        fsm_tab.load_mealy_preset()
+
+        # FSM type and parameters
+        self.assertEqual(fsm_tab.fsm.fsm_type, FSMType.MEALY)
+        self.assertEqual(fsm_tab.combo_type.currentText(), FSMType.MEALY.value)
+        self.assertEqual(fsm_tab.edit_name.text(), "seq_detector_101_mealy")
+
+        # Table populated
+        self.assertEqual(fsm_tab.table_states.rowCount(), 3)
+        self.assertEqual(fsm_tab.table_trans.rowCount(), 6)
+
+        # Transition table Mealy output column (index 4)
+        has_mealy_output_cell = False
+        for r in range(fsm_tab.table_trans.rowCount()):
+            item = fsm_tab.table_trans.item(r, 4)
+            if item and "pattern_found=1'b1" in item.text():
+                has_mealy_output_cell = True
+                break
+        self.assertTrue(has_mealy_output_cell, "Expected pattern_found=1'b1 in Mealy column of transitions table")
+
+        # Canvas scene items
+        self.assertEqual(len(fsm_tab.fsm_scene.state_items), 3)
+        self.assertEqual(len(fsm_tab.fsm_scene.trans_items), 6)
+
+        # Validation should succeed without errors
+        fsm_tab.run_validation()
+        self.assertGreater(fsm_tab.list_issues.count(), 0)
+        first_issue = fsm_tab.list_issues.item(0).text()
+        self.assertIn("cumple estrictamente", first_issue)
+
+        # SV Code generation
+        code = fsm_tab.text_sv.toPlainText()
+        self.assertIn("module seq_detector_101_mealy", code)
+        self.assertIn("pattern_found = 1'b1;", code)
+
+        # Test switching back to Moore pulse preset and reloading via button click
+        fsm_tab.load_pulse_preset()
+        self.assertEqual(fsm_tab.fsm.fsm_type, FSMType.MOORE)
+        self.assertEqual(fsm_tab.combo_type.currentText(), FSMType.MOORE.value)
+
+        # Find Mealy button and click it
+        mealy_buttons = [b for b in fsm_tab.findChildren(QPushButton) if "Mealy" in b.text()]
+        self.assertEqual(len(mealy_buttons), 1)
+        mealy_buttons[0].click()
+        self.assertEqual(fsm_tab.fsm.fsm_type, FSMType.MEALY)
+        self.assertEqual(fsm_tab.combo_type.currentText(), FSMType.MEALY.value)
+
+    def test_component_accurate_hitboxes(self):
+        scene = self.win.tab_rtl.scene
+
+        # 1. MUX shape test
+        mux = ComponentFactory.create_mux(0, 0, num_inputs=2, width=1)
+        mux_item = scene.add_component(mux)
+        sh_mux = mux_item.shape()
+        w_m, h_m = mux.width, mux.height
+        # Center should be inside
+        self.assertTrue(sh_mux.contains(QPointF(w_m * 0.5, h_m * 0.5)))
+        # Top-right corner of bounding box is outside trapezoid (h_m * 0.2 is top edge of right side)
+        self.assertFalse(sh_mux.contains(QPointF(w_m - 2, 2)))
+        # Bottom-right corner of bounding box is outside trapezoid (h_m * 0.8 is bottom edge of right side)
+        self.assertFalse(sh_mux.contains(QPointF(w_m - 2, h_m - 2)))
+
+        # 2. Operator Circle shape test
+        op = ComponentFactory.create_operator(0, 0, op="+", width=4)
+        op_item = scene.add_component(op)
+        sh_op = op_item.shape()
+        w_op, h_op = op.width, op.height
+        # Center is inside
+        self.assertTrue(sh_op.contains(QPointF(w_op * 0.5, h_op * 0.5)))
+        # Top-left corner is outside circle
+        self.assertFalse(sh_op.contains(QPointF(2, 2)))
+        # Top-right corner is outside circle
+        self.assertFalse(sh_op.contains(QPointF(w_op - 2, 2)))
+
+        # 3. Gate NOT shape test
+        not_gate = ComponentFactory.create_gate(0, 0, gate_type="NOT")
+        not_item = scene.add_component(not_gate)
+        sh_not = not_item.shape()
+        w_n, h_n = not_gate.width, not_gate.height
+        # Center of triangle is inside
+        self.assertTrue(sh_not.contains(QPointF(w_n * 0.3, h_n * 0.5)))
+        # Top-right empty area is outside
+        self.assertFalse(sh_not.contains(QPointF(w_n * 0.8, 5)))
+
+        # 4. Solder dot shape test
+        scene.add_junction_at(QPointF(100, 100))
+        j_item = list(scene.junction_items.values())[-1]
+        sh_j = j_item.shape()
+        self.assertTrue(sh_j.contains(QPointF(0, 0)))
+        # Point outside circle
+        self.assertFalse(sh_j.contains(QPointF(j_item.RADIUS + 10, j_item.RADIUS + 10)))
+
+        # 5. FSM State circle shape test
+        fsm_tab = self.win.tab_fsm
+        fsm_tab.load_pulse_preset()
+        state_item = list(fsm_tab.fsm_scene.state_items.values())[0]
+        sh_s = state_item.shape()
+        self.assertTrue(sh_s.contains(QPointF(0, 0)))
+        # Corner of square is outside circle of radius 42
+        self.assertFalse(sh_s.contains(QPointF(state_item.RADIUS - 2, state_item.RADIUS - 2)))
+
+    def test_spawn_position_in_view(self):
+        rtl = self.win.tab_rtl
+        # Verify spawn pos does not default to (0, 0)
+        pos1 = rtl._get_spawn_pos()
+        self.assertNotEqual(pos1, (0.0, 0.0))
+
+        # Adding a component at pos1 causes next spawn to stagger
+        c = ComponentFactory.create_constant(pos1[0], pos1[1], "1'b0")
+        rtl.scene.add_component(c)
+        pos2 = rtl._get_spawn_pos()
+        self.assertNotEqual(pos1, pos2)
+
+    def test_wiring_cancellation_preserves_item_drag(self):
+        from PySide6.QtTest import QTest
+        rtl = self.win.tab_rtl
+        scene = rtl.scene
+        view = rtl.view
+        viewport = view.viewport()
+
+        # Add a gate to drag
+        gate = ComponentFactory.create_gate(200, 200, "AND")
+        item = scene.add_component(gate)
+
+        # Start wiring from a pin
+        pin = item.pin_items[0]
+        scene.start_wiring(pin)
+        self.assertTrue(scene.wiring_active)
+
+        # Click on center of the gate
+        gate_center_scene = item.scenePos() + QPointF(item.model.width / 2, item.model.height / 2)
+        center_view = view.mapFromScene(gate_center_scene)
+
+        QTest.mousePress(viewport, Qt.LeftButton, Qt.NoModifier, center_view)
+        # Wiring should be cancelled and item should be selected
+        self.assertFalse(scene.wiring_active)
+        self.assertTrue(item.isSelected())
+
+        # Drag gate
+        target_view = center_view + QPoint(60, 60)
+        QTest.mouseMove(viewport, target_view)
+        QTest.mouseRelease(viewport, Qt.LeftButton, Qt.NoModifier, target_view)
+        self.assertEqual(item.pos().x(), 260.0)
+        self.assertEqual(item.pos().y(), 260.0)
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
 

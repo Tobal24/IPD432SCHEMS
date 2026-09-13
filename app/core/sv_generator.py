@@ -198,9 +198,13 @@ class SystemVerilogGenerator:
                 lines.append("        case (State)")
                 for s in fsm.states:
                     lines.append(f"            {s.name}: begin")
-                    if s.moore_outputs:
-                        for out_name, out_val in s.moore_outputs.items():
-                            lines.append(f"                {out_name} = {out_val};")
+                    if fsm.fsm_type == FSMType.MOORE:
+                        if s.moore_outputs:
+                            for out_name, out_val in s.moore_outputs.items():
+                                lines.append(f"                {out_name} = {out_val};")
+                    else:
+                        transitions = fsm.get_transitions_from(s.name)
+                        _emit_transitions(lines, transitions, FSMType.MEALY, has_timers, indent="                ", ignore_next_state=True)
                     lines.append("            end")
                 lines.append("            default: begin")
                 for p in fsm.outputs:
@@ -213,7 +217,7 @@ class SystemVerilogGenerator:
         return "\n".join(lines)
 
 
-def _emit_transitions(lines, transitions, fsm_type, has_timers, indent="                ", ignore_mealy=False):
+def _emit_transitions(lines, transitions, fsm_type, has_timers, indent="                ", ignore_mealy=False, ignore_next_state=False):
     if not transitions:
         return
 
@@ -230,7 +234,8 @@ def _emit_transitions(lines, transitions, fsm_type, has_timers, indent="        
 
         keyword = "if" if first else "else if"
         lines.append(f"{indent}{keyword} ({cond_expr}) begin")
-        lines.append(f"{indent}    NextState = {t.target};")
+        if not ignore_next_state:
+            lines.append(f"{indent}    NextState = {t.target};")
         if fsm_type == FSMType.MEALY and not ignore_mealy and t.mealy_outputs:
             for out_name, out_val in t.mealy_outputs.items():
                 lines.append(f"{indent}    {out_name} = {out_val};")
@@ -243,7 +248,8 @@ def _emit_transitions(lines, transitions, fsm_type, has_timers, indent="        
             lines.append(f"{indent}else begin")
         else:
             lines.append(f"{indent}begin")
-        lines.append(f"{indent}    NextState = {t.target};")
+        if not ignore_next_state:
+            lines.append(f"{indent}    NextState = {t.target};")
         if fsm_type == FSMType.MEALY and not ignore_mealy and t.mealy_outputs:
             for out_name, out_val in t.mealy_outputs.items():
                 lines.append(f"{indent}    {out_name} = {out_val};")

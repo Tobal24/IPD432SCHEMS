@@ -188,3 +188,39 @@ class FSM:
         with open(filepath, "r", encoding="utf-8") as f:
             data = json.load(f)
         return cls.from_dict(data)
+
+    @classmethod
+    def create_sequence_detector_mealy(cls) -> "FSM":
+        """
+        Canonical Mealy FSM example from digital systems design (IPD432 / ELO212):
+        Sequence detector for pattern '101' with overlapping.
+        Inputs: din (1-bit)
+        Outputs: pattern_found (1-bit, asserted on transition when '101' is detected)
+        States: S0 (reset/idle), S1 (matched '1'), S2 (matched '10').
+        Requires only 3 states in Mealy compared to 4 states in Moore.
+        """
+        return cls(
+            name="seq_detector_101_mealy",
+            fsm_type=FSMType.MEALY,
+            reset_type=ResetType.SYNC_HIGH,
+            encoding=FSMEncoding.SEQUENTIAL,
+            inputs=[
+                Port(name="din", width=1, default_val="1'b0")
+            ],
+            outputs=[
+                Port(name="pattern_found", width=1, default_val="1'b0")
+            ],
+            states=[
+                State(name="S0", is_initial=True, x=-220, y=0),
+                State(name="S1", x=0, y=0),
+                State(name="S2", x=220, y=0),
+            ],
+            transitions=[
+                Transition(source="S0", target="S1", condition="din == 1'b1", mealy_outputs={"pattern_found": "1'b0"}),
+                Transition(source="S0", target="S0", condition="else", mealy_outputs={"pattern_found": "1'b0"}),
+                Transition(source="S1", target="S2", condition="din == 1'b0", mealy_outputs={"pattern_found": "1'b0"}),
+                Transition(source="S1", target="S1", condition="else", mealy_outputs={"pattern_found": "1'b0"}),
+                Transition(source="S2", target="S1", condition="din == 1'b1", mealy_outputs={"pattern_found": "1'b1"}),
+                Transition(source="S2", target="S0", condition="else", mealy_outputs={"pattern_found": "1'b0"}),
+            ]
+        )
