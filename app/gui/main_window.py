@@ -133,10 +133,6 @@ class MainWindow(QMainWindow):
         act_export_png.triggered.connect(self.export_active_png)
         menu_file.addAction(act_export_png)
 
-        act_export_sv = QAction("Exportar Código SystemVerilog (.sv)...", self)
-        act_export_sv.triggered.connect(self.tab_fsm.save_sv_file)
-        menu_file.addAction(act_export_sv)
-
         menu_file.addSeparator()
         act_exit = QAction("Salir", self)
         act_exit.triggered.connect(self.close)

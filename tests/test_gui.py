@@ -39,17 +39,12 @@ class TestGUIIntegration(unittest.TestCase):
         item = rtl.scene.add_component(mux)
         self.assertIn(mux.id, rtl.scene.comp_items)
 
-    def test_fsm_designer_presets_and_codegen(self):
+    def test_fsm_designer_presets(self):
         fsm_tab = self.win.tab_fsm
         # Load Traffic light preset
         fsm_tab.load_traffic_preset()
         self.assertEqual(len(fsm_tab.fsm.states), 4)
         self.assertEqual(len(fsm_tab.fsm.transitions), 6)
-
-        # Verify SystemVerilog code updated
-        code = fsm_tab.text_sv.toPlainText()
-        self.assertIn("module traffic_light_controller", code)
-        self.assertIn("LA = 2'b00;", code)
 
         # Run validation
         fsm_tab.run_validation()
@@ -474,32 +469,32 @@ class TestGUIIntegration(unittest.TestCase):
         self.assertEqual(len(scene.schematic.wires), init_wire_count)
 
     def test_wire_parameter_ui_and_rendering(self):
-        """Verify parameter assignment to wire and slash rendering"""
+        """Verify manual bus width assignment to wire and slash rendering"""
         rtl_tab = self.win.tab_rtl
         rtl_tab.load_counter_example()
         scene = rtl_tab.scene
-
-        # Define parameter
-        scene.schematic.set_parameter("DATA_WIDTH", 8)
-        rtl_tab._update_param_combos()
 
         w1_item = scene.wire_items["w_const"]
         scene.clearSelection()
         w1_item.setSelected(True)
         rtl_tab._on_selection_changed()
 
-        # Select DATA_WIDTH in combo
-        idx = rtl_tab.combo_wire_param.findData("DATA_WIDTH")
-        self.assertGreaterEqual(idx, 0)
-        rtl_tab.combo_wire_param.setCurrentIndex(idx)
+        # Wire width spinbox is loaded from wire model (w1 is 4-bit)
+        self.assertEqual(rtl_tab.spin_wire_width.value(), 4)
+        self.assertTrue(w1_item.model.is_bus)
+
+        # Change width manually via spinbox
+        rtl_tab.spin_wire_width.setValue(8)
         rtl_tab.apply_wire_props()
 
-        self.assertEqual(w1_item.model.width_param, "DATA_WIDTH")
         self.assertEqual(w1_item.model.width, 8)
+        self.assertTrue(w1_item.model.is_bus)
 
-        # Update parameter in schematic
-        scene.schematic.set_parameter("DATA_WIDTH", 16)
-        self.assertEqual(w1_item.model.width, 16)
+        # Change width manually to 1 (single-bit wire)
+        rtl_tab.spin_wire_width.setValue(1)
+        rtl_tab.apply_wire_props()
+        self.assertEqual(w1_item.model.width, 1)
+        self.assertFalse(w1_item.model.is_bus)
 
     def test_port_indicators_gui(self):
         """Test adding and rendering input and output ports in RTL editor"""
@@ -584,10 +579,6 @@ class TestGUIIntegration(unittest.TestCase):
         first_issue = fsm_tab.list_issues.item(0).text()
         self.assertIn("cumple estrictamente", first_issue)
 
-        # SV Code generation
-        code = fsm_tab.text_sv.toPlainText()
-        self.assertIn("module seq_detector_101_mealy", code)
-        self.assertIn("pattern_found = 1'b1;", code)
 
         # Test switching back to Moore pulse preset and reloading via button click
         fsm_tab.load_pulse_preset()
@@ -698,6 +689,113 @@ class TestGUIIntegration(unittest.TestCase):
         QTest.mouseRelease(viewport, Qt.LeftButton, Qt.NoModifier, target_view)
         self.assertEqual(item.pos().x(), 260.0)
         self.assertEqual(item.pos().y(), 260.0)
+
+    def test_operator_rotation_and_label_upright(self):
+        """Test rotating circular operator 90, 180, 270, 0 degrees with upright label"""
+        rtl_tab = self.win.tab_rtl
+        scene = rtl_tab.scene
+
+        op_comp = ComponentFactory.create_operator(200, 200, op="+", width=1, size=60.0, rotation=0)
+        item = scene.add_component(op_comp)
+
+        # Initial rotation 0: pins A, B on LEFT, OUT on RIGHT
+        self.assertEqual(op_comp.pins[0].side, PinSide.LEFT)
+        self.assertEqual(op_comp.pins[1].side, PinSide.LEFT)
+        self.assertEqual(op_comp.pins[2].side, PinSide.RIGHT)
+        self.assertEqual(int(op_comp.props.get("rotation", 0)), 0)
+
+        # Select item and rotate 90°
+        scene.clearSelection()
+        item.setSelected(True)
+        scene.rotate_selected_operators()
+        self.assertEqual(int(op_comp.props["rotation"]), 90)
+        self.assertEqual(op_comp.pins[0].side, PinSide.TOP)
+        self.assertEqual(op_comp.pins[1].side, PinSide.TOP)
+        self.assertEqual(op_comp.pins[2].side, PinSide.BOTTOM)
+
+        # Rotate 180°
+        scene.rotate_selected_operators()
+        self.assertEqual(int(op_comp.props["rotation"]), 180)
+        self.assertEqual(op_comp.pins[0].side, PinSide.RIGHT)
+        self.assertEqual(op_comp.pins[1].side, PinSide.RIGHT)
+        self.assertEqual(op_comp.pins[2].side, PinSide.LEFT)
+
+        # Rotate 270°
+        scene.rotate_selected_operators()
+        self.assertEqual(int(op_comp.props["rotation"]), 270)
+        self.assertEqual(op_comp.pins[0].side, PinSide.BOTTOM)
+        self.assertEqual(op_comp.pins[1].side, PinSide.BOTTOM)
+        self.assertEqual(op_comp.pins[2].side, PinSide.TOP)
+
+        # Rotate back to 0°
+        scene.rotate_selected_operators()
+        self.assertEqual(int(op_comp.props["rotation"]), 0)
+        self.assertEqual(op_comp.pins[0].side, PinSide.LEFT)
+        self.assertEqual(op_comp.pins[1].side, PinSide.LEFT)
+        self.assertEqual(op_comp.pins[2].side, PinSide.RIGHT)
+
+        # Label remains "+"
+        self.assertEqual(op_comp.label, "+")
+
+    def test_operator_resizing_without_pin_collision(self):
+        """Test that resizing circular operator (e.g. to 40px, 50px) maintains distinct pin positions without collision"""
+        rtl_tab = self.win.tab_rtl
+        scene = rtl_tab.scene
+
+        op_comp = ComponentFactory.create_operator(100, 100, op="*", width=1, size=40.0, rotation=0)
+        item = scene.add_component(op_comp)
+
+        self.assertEqual(item.model.width, 40.0)
+        self.assertEqual(item.model.height, 40.0)
+
+        pin_a_pos = item.pin_items[0].scenePos()
+        pin_b_pos = item.pin_items[1].scenePos()
+        pin_out_pos = item.pin_items[2].scenePos()
+
+        # Check distinct positions: A at y=110, B at y=130, Out at x=140, y=120
+        self.assertEqual((pin_a_pos.x(), pin_a_pos.y()), (100.0, 110.0))
+        self.assertEqual((pin_b_pos.x(), pin_b_pos.y()), (100.0, 130.0))
+        self.assertEqual((pin_out_pos.x(), pin_out_pos.y()), (140.0, 120.0))
+
+        # None of the pins collide
+        self.assertNotEqual((pin_a_pos.x(), pin_a_pos.y()), (pin_b_pos.x(), pin_b_pos.y()))
+        self.assertNotEqual((pin_a_pos.x(), pin_a_pos.y()), (pin_out_pos.x(), pin_out_pos.y()))
+        self.assertNotEqual((pin_b_pos.x(), pin_b_pos.y()), (pin_out_pos.x(), pin_out_pos.y()))
+
+    def test_mux_compact_width(self):
+        """Test that multiplexers use narrower width (50px instead of 70-80px) to save canvas space"""
+        mux2 = ComponentFactory.create_mux(0, 0, num_inputs=2, width=1)
+        mux4 = ComponentFactory.create_mux(0, 0, num_inputs=4, width=1)
+
+        self.assertEqual(mux2.width, 50.0)
+        self.assertEqual(mux4.width, 50.0)
+
+    def test_wire_bus_slash_rendering(self):
+        """Test that multi-bit wires render bus slash with bit count and 1-bit wires do not"""
+        rtl_tab = self.win.tab_rtl
+        rtl_tab.load_counter_example()
+        scene = rtl_tab.scene
+
+        w_const = scene.wire_items["w_const"] # 4-bit wire
+        self.assertTrue(w_const.model.is_bus)
+        self.assertTrue((w_const.model.width > 1 or w_const.model.width_param) and w_const.model.show_slash)
+
+        # Test paint runs with bus slash without error
+        from PySide6.QtGui import QImage, QPainter
+        img = QImage(200, 200, QImage.Format_ARGB32)
+        p = QPainter(img)
+        w_const.paint(p, None, None)
+        p.end()
+
+        # Change width to 1
+        w_const.model.width = 1
+        self.assertFalse(w_const.model.is_bus)
+        self.assertFalse((w_const.model.width > 1 or w_const.model.width_param) and w_const.model.show_slash)
+
+        # Test paint runs for single-bit wire without error
+        p2 = QPainter(img)
+        w_const.paint(p2, None, None)
+        p2.end()
 
 
 if __name__ == "__main__":

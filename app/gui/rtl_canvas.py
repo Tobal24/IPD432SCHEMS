@@ -333,6 +333,52 @@ class RTLGraphicsScene(QGraphicsScene):
 
         self.status_message.emit("Bloque(s) reflejado(s) horizontalmente. (Ctrl+Z para deshacer)")
 
+    @staticmethod
+    def apply_operator_rotation(comp: RTLComponent, rot: int):
+        rot = rot % 360
+        is_unary = comp.properties.get("is_unary") == "True" or comp.properties.get("is_reduction") == "True"
+        if rot == 90:
+            in_side, out_side = PinSide.TOP, PinSide.BOTTOM
+        elif rot == 180:
+            in_side, out_side = PinSide.RIGHT, PinSide.LEFT
+        elif rot == 270:
+            in_side, out_side = PinSide.BOTTOM, PinSide.TOP
+        else: # 0
+            in_side, out_side = PinSide.LEFT, PinSide.RIGHT
+
+        for pin in comp.pins:
+            if pin.direction == PinDirection.OUT:
+                pin.side = out_side
+                pin.offset = 0.5
+            else:
+                pin.side = in_side
+                if is_unary:
+                    pin.offset = 0.5
+                else:
+                    pin.offset = 0.25 if pin.name == "A" or pin.id.endswith("_a") else 0.75
+
+    def rotate_selected_operators(self):
+        selected_ops = [
+            item for item in self.selectedItems()
+            if isinstance(item, RTLComponentItem) and item.model.type == ComponentType.OPERATOR_CIRCLE
+        ]
+        if not selected_ops:
+            self.status_message.emit("Seleccione al menos un operador circular para rotar (Ctrl+R).")
+            return
+
+        self.push_undo_state()
+        for op_item in selected_ops:
+            comp = op_item.model
+            cur_rot = int(comp.properties.get("rotation", "0"))
+            new_rot = (cur_rot + 90) % 360
+            comp.properties["rotation"] = str(new_rot)
+            self.apply_operator_rotation(comp, new_rot)
+            op_item.rebuild_pins()
+            self.on_component_moved(op_item)
+            op_item.update()
+
+        self.status_message.emit("Operador(es) rotado(s) 90°. (Ctrl+Z para deshacer)")
+
     def copy_selected(self):
         sel = self.selectedItems()
         selected_comps = [item.model for item in sel if isinstance(item, RTLComponentItem)]
@@ -577,6 +623,10 @@ class RTLGraphicsScene(QGraphicsScene):
                 self.paste()
                 event.accept()
                 return
+            elif event.key() == Qt.Key_R:
+                self.rotate_selected_operators()
+                event.accept()
+                return
 
         if event.key() == Qt.Key_R:
             if event.modifiers() & Qt.ShiftModifier:
@@ -606,6 +656,7 @@ class RTLGraphicsScene(QGraphicsScene):
 
         if target_wire:
             menu = QMenu()
+            act_width = menu.addAction("📏 Definir Ancho de Bus (Bits)...")
             act_reroute = menu.addAction("🔄 Restablecer Ruteo Automático (R)")
             act_relabel = menu.addAction("🏷️ Restablecer Posición de Etiqueta (Shift+R)")
             act_arrow = menu.addAction("➡️ Alternar Flecha de Dirección")
@@ -614,7 +665,20 @@ class RTLGraphicsScene(QGraphicsScene):
             menu.addSeparator()
             act_del = menu.addAction("🗑️ Eliminar Cable (Supr)")
             action = menu.exec(event.screenPos())
-            if action == act_reroute:
+            if action == act_width:
+                val, ok = QInputDialog.getInt(
+                    None, "Ancho de Bus",
+                    "Número de bits (1 = cable simple, >1 = bus con /N):",
+                    target_wire.model.width, 1, 512, 1
+                )
+                if ok:
+                    self.push_undo_state()
+                    target_wire.model.width = val
+                    target_wire._sync_label_item()
+                    target_wire.prepareGeometryChange()
+                    target_wire.update()
+                    self.status_message.emit(f"Ancho del cable actualizado a {val} bit{'s' if val > 1 else ''}.")
+            elif action == act_reroute:
                 self.push_undo_state()
                 target_wire.reset_routing()
             elif action == act_relabel:
@@ -634,6 +698,8 @@ class RTLGraphicsScene(QGraphicsScene):
         if isinstance(item, RTLComponentItem):
             menu = QMenu()
             act_edit = None
+            act_rotate = None
+            act_resize_op = None
             if item.model.type == ComponentType.BLOCK:
                 act_edit = menu.addAction("⚙️ Configurar Bloque (Puertos y Tamaño)...")
             elif item.model.type == ComponentType.MUX:
@@ -642,6 +708,8 @@ class RTLGraphicsScene(QGraphicsScene):
                 act_edit = menu.addAction("⚙️ Configurar Desagregador de Bus...")
             elif item.model.type == ComponentType.OPERATOR_CIRCLE:
                 act_edit = menu.addAction("⚙️ Configurar Operador...")
+                act_rotate = menu.addAction("🔄 Rotar Operador 90° (Ctrl+R)")
+                act_resize_op = menu.addAction("📐 Cambiar Diámetro del Operador...")
             elif item.model.type in (ComponentType.INPUT_PORT, ComponentType.OUTPUT_PORT):
                 act_edit = menu.addAction("⚙️ Configurar Puerto...")
 
@@ -654,6 +722,26 @@ class RTLGraphicsScene(QGraphicsScene):
             action = menu.exec(event.screenPos())
             if act_edit and action == act_edit:
                 item.mouseDoubleClickEvent(None)
+            elif act_rotate and action == act_rotate:
+                if not item.isSelected():
+                    self.clearSelection()
+                    item.setSelected(True)
+                self.rotate_selected_operators()
+            elif act_resize_op and action == act_resize_op:
+                val, ok = QInputDialog.getInt(
+                    None, "Diámetro del Operador",
+                    "Diámetro en píxeles (40 - 120 px):",
+                    int(item.model.width), 40, 120, 10
+                )
+                if ok:
+                    self.push_undo_state()
+                    item.prepareGeometryChange()
+                    item.model.width = float(val)
+                    item.model.height = float(val)
+                    item.rebuild_pins()
+                    self.on_component_moved(item)
+                    item.update()
+                    self.status_message.emit(f"Diámetro del operador actualizado a {val} px.")
             elif action == act_mirror:
                 if not item.isSelected():
                     self.clearSelection()

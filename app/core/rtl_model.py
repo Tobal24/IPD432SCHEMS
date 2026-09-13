@@ -109,6 +109,10 @@ class RTLComponent:
             "mirrored": self.mirrored
         }
 
+    @property
+    def props(self) -> Dict[str, str]:
+        return self.properties
+
     @classmethod
     def from_dict(cls, data: dict) -> "RTLComponent":
         return cls(
@@ -140,6 +144,10 @@ class RTLWire:
     manual_routing: bool = False                                     # If True, wire was manually routed/adjusted
     label_pos: Optional[Tuple[float, float]] = None                  # Custom position for label (x, y) if dragged
     show_arrow: bool = False                                         # Show arrowhead indicating signal direction at target
+
+    @property
+    def is_bus(self) -> bool:
+        return self.width > 1
 
     def to_dict(self) -> dict:
         return {
@@ -323,7 +331,7 @@ class ComponentFactory:
 
         # Calculate width needed for input labels
         max_label_len = max((len(n) for n in input_names), default=1)
-        mux_w = max(70.0, 40.0 + max_label_len * 9.0 + 20.0)
+        mux_w = max(50.0, 25.0 + max_label_len * 10.0 + 10.0)
 
         # Input pins on left (wide side)
         for i, in_name in enumerate(input_names):
@@ -395,33 +403,44 @@ class ComponentFactory:
         )
 
     @staticmethod
-    def create_operator(x: float = 0, y: float = 0, op: str = "+", width: int = 4, is_reduction: bool = False) -> RTLComponent:
+    def create_operator(x: float = 0, y: float = 0, op: str = "+", width: int = 1,
+                        is_reduction: bool = False, size: float = 60.0, rotation: int = 0) -> RTLComponent:
         comp_id = f"op_{uuid.uuid4().hex[:6]}"
         is_red = is_reduction or op.endswith("(red)")
         is_unary = op in ("~", "- (unario)", "INV", "NOT")
         
         clean_lbl = op.replace(" (red)", "").replace(" (unario)", "")
 
+        rot = rotation % 360
+        if rot == 90:
+            in_side, out_side = PinSide.TOP, PinSide.BOTTOM
+        elif rot == 180:
+            in_side, out_side = PinSide.RIGHT, PinSide.LEFT
+        elif rot == 270:
+            in_side, out_side = PinSide.BOTTOM, PinSide.TOP
+        else:
+            in_side, out_side = PinSide.LEFT, PinSide.RIGHT
+
         if is_red:
             pins = [
-                RTLPin(id=f"{comp_id}_a", name="A", direction=PinDirection.IN, side=PinSide.LEFT, offset=0.5, width=width),
-                RTLPin(id=f"{comp_id}_out", name="out", direction=PinDirection.OUT, side=PinSide.RIGHT, offset=0.5, width=1)
+                RTLPin(id=f"{comp_id}_a", name="A", direction=PinDirection.IN, side=in_side, offset=0.5, width=width),
+                RTLPin(id=f"{comp_id}_out", name="out", direction=PinDirection.OUT, side=out_side, offset=0.5, width=1)
             ]
-            props = {"op": op, "bus_width": str(width), "is_reduction": "True"}
+            props = {"op": op, "bus_width": str(width), "is_reduction": "True", "rotation": str(rot)}
         elif is_unary:
             pins = [
-                RTLPin(id=f"{comp_id}_a", name="A", direction=PinDirection.IN, side=PinSide.LEFT, offset=0.5, width=width),
-                RTLPin(id=f"{comp_id}_out", name="out", direction=PinDirection.OUT, side=PinSide.RIGHT, offset=0.5, width=width)
+                RTLPin(id=f"{comp_id}_a", name="A", direction=PinDirection.IN, side=in_side, offset=0.5, width=width),
+                RTLPin(id=f"{comp_id}_out", name="out", direction=PinDirection.OUT, side=out_side, offset=0.5, width=width)
             ]
-            props = {"op": op, "bus_width": str(width), "is_unary": "True"}
+            props = {"op": op, "bus_width": str(width), "is_unary": "True", "rotation": str(rot)}
         else:
             out_w = 1 if op in ("A==B", "A!=B", "A>B", "A<B", "A>=B", "A<=B") else width
             pins = [
-                RTLPin(id=f"{comp_id}_a", name="A", direction=PinDirection.IN, side=PinSide.LEFT, offset=0.25, width=width),
-                RTLPin(id=f"{comp_id}_b", name="B", direction=PinDirection.IN, side=PinSide.LEFT, offset=0.75, width=width),
-                RTLPin(id=f"{comp_id}_out", name="out", direction=PinDirection.OUT, side=PinSide.RIGHT, offset=0.5, width=out_w)
+                RTLPin(id=f"{comp_id}_a", name="A", direction=PinDirection.IN, side=in_side, offset=0.25, width=width),
+                RTLPin(id=f"{comp_id}_b", name="B", direction=PinDirection.IN, side=in_side, offset=0.75, width=width),
+                RTLPin(id=f"{comp_id}_out", name="out", direction=PinDirection.OUT, side=out_side, offset=0.5, width=out_w)
             ]
-            props = {"op": op, "bus_width": str(width)}
+            props = {"op": op, "bus_width": str(width), "rotation": str(rot)}
 
         return RTLComponent(
             id=comp_id,
@@ -429,8 +448,8 @@ class ComponentFactory:
             label=clean_lbl,
             x=x,
             y=y,
-            width=80.0,
-            height=80.0,
+            width=size,
+            height=size,
             pins=pins,
             properties=props
         )

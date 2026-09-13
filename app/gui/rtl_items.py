@@ -77,6 +77,15 @@ class RTLPinItem(QGraphicsItem):
                 else: # BOTTOM
                     y_edge = h - (h * 0.2) * (1.0 - off)
                     pos = QPointF(snap(w * off), y_edge)
+        elif ctype == ComponentType.OPERATOR_CIRCLE:
+            if side == PinSide.LEFT:
+                pos = QPointF(0, h * off)
+            elif side == PinSide.RIGHT:
+                pos = QPointF(w, h * off)
+            elif side == PinSide.TOP:
+                pos = QPointF(w * off, 0)
+            else: # BOTTOM
+                pos = QPointF(w * off, h)
         else:
             if side == PinSide.LEFT:
                 pos = QPointF(0, snap(h * off))
@@ -143,10 +152,10 @@ class RTLPinItem(QGraphicsItem):
             else:
                 painter.drawText(QRectF(-tw - 6, -8, tw + 4, 16), Qt.AlignRight | Qt.AlignVCenter, name)
         elif self.pin.side == PinSide.TOP:
-            y_off = 6 if ctype == ComponentType.MUX else -18
+            y_off = 6 if ctype in (ComponentType.MUX, ComponentType.OPERATOR_CIRCLE) else -18
             painter.drawText(QRectF(-25, y_off, 50, 14), Qt.AlignCenter, name)
         elif self.pin.side == PinSide.BOTTOM:
-            y_off = -18 if ctype == ComponentType.MUX else 4
+            y_off = -18 if ctype in (ComponentType.MUX, ComponentType.OPERATOR_CIRCLE) else 4
             painter.drawText(QRectF(-25, y_off, 50, 14), Qt.AlignCenter, name)
 
     def hoverEnterEvent(self, event):
@@ -666,7 +675,9 @@ class RTLComponentItem(QGraphicsItem):
     def _paint_circle_op(self, painter: QPainter, w: float, h: float):
         painter.drawEllipse(QRectF(0, 0, w, h))
         lbl = self.model.label
-        fsize = 8 if len(lbl) > 5 else (9 if len(lbl) > 3 else (10 if len(lbl) > 1 else 12))
+        base_size = 9 if w <= 45 else (10 if w <= 60 else 12)
+        fsize = base_size - 3 if len(lbl) > 5 else (base_size - 2 if len(lbl) > 3 else (base_size - 1 if len(lbl) > 1 else base_size))
+        fsize = max(7, fsize)
         painter.setFont(QFont("Segoe UI", fsize, QFont.Bold))
         painter.setPen(QPen(QColor(30, 30, 30)))
         painter.drawText(QRectF(0, 0, w, h), Qt.AlignCenter, lbl)

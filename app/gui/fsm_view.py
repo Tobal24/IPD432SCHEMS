@@ -610,25 +610,8 @@ class FSMDesignerWidget(QWidget):
         form.addRow("Codificación (Vivado):", self.combo_encoding)
         left_layout.addWidget(param_box)
 
-        # Tabs for Tables (Ports, States, Transitions)
+        # Tabs for Tables (States, Transitions)
         table_tabs = QTabWidget()
-
-        # Ports Tab
-        ports_w = QWidget()
-        p_layout = QVBoxLayout(ports_w)
-        self.table_ports = QTableWidget(0, 4)
-        self.table_ports.setHorizontalHeaderLabels(["Nombre", "Dirección", "Ancho", "Valor Defecto (Anti-Latch)"])
-        self.table_ports.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        p_btn_layout = QHBoxLayout()
-        btn_add_port = QPushButton("+ Agregar Puerto")
-        btn_del_port = QPushButton("- Eliminar Puerto")
-        btn_add_port.clicked.connect(self.add_port)
-        btn_del_port.clicked.connect(self.del_port)
-        p_btn_layout.addWidget(btn_add_port)
-        p_btn_layout.addWidget(btn_del_port)
-        p_layout.addWidget(self.table_ports)
-        p_layout.addLayout(p_btn_layout)
-        table_tabs.addTab(ports_w, "Puertos (I/O)")
 
         # States Tab
         states_w = QWidget()
@@ -679,14 +662,13 @@ class FSMDesignerWidget(QWidget):
         left_layout.addWidget(val_box)
 
         # Connect cell changed signals
-        self.table_ports.cellChanged.connect(self._sync_ports_from_table)
         self.table_states.cellChanged.connect(self._sync_states_from_table)
         self.table_trans.cellChanged.connect(self._sync_trans_from_table)
 
         splitter.addWidget(left_widget)
 
         # -------------------------------------------------------------
-        # Right Panel: State Diagram & SystemVerilog Generator
+        # Right Panel: State Diagram
         # -------------------------------------------------------------
         right_widget = QWidget()
         right_layout = QVBoxLayout(right_widget)
@@ -710,38 +692,7 @@ class FSMDesignerWidget(QWidget):
         diag_tools.addWidget(btn_layout_circle)
         diag_tools.addWidget(btn_relabel_fsm)
         right_layout.addLayout(diag_tools)
-        right_layout.addWidget(self.fsm_view, 2)
-
-        # SystemVerilog Code View
-        hdl_box = QGroupBox("Código SystemVerilog Generado (Normas IPD432 / ELO212)")
-        hdl_layout = QVBoxLayout(hdl_box)
-
-        ctrl_row = QHBoxLayout()
-        self.combo_hdl_style = QComboBox()
-        self.combo_hdl_style.addItems(["2 Bloques always (Canónico)", "3 Bloques always"])
-        self.chk_registered_out = QCheckBox("Salidas Registradas (Glitch-free)")
-        self.combo_hdl_style.currentIndexChanged.connect(self.update_sv_code)
-        self.chk_registered_out.toggled.connect(self.update_sv_code)
-
-        btn_copy_sv = QPushButton("📋 Copiar Código")
-        btn_save_sv = QPushButton("💾 Guardar .sv")
-        btn_copy_sv.clicked.connect(self.copy_sv_code)
-        btn_save_sv.clicked.connect(self.save_sv_file)
-
-        ctrl_row.addWidget(QLabel("Estilo:"))
-        ctrl_row.addWidget(self.combo_hdl_style)
-        ctrl_row.addWidget(self.chk_registered_out)
-        ctrl_row.addStretch()
-        ctrl_row.addWidget(btn_copy_sv)
-        ctrl_row.addWidget(btn_save_sv)
-        hdl_layout.addLayout(ctrl_row)
-
-        self.text_sv = QTextEdit()
-        self.text_sv.setReadOnly(True)
-        self.text_sv.setFont(QFont("Consolas", 9))
-        hdl_layout.addWidget(self.text_sv)
-
-        right_layout.addWidget(hdl_box, 1)
+        right_layout.addWidget(self.fsm_view, 1)
 
         splitter.addWidget(right_widget)
         splitter.setSizes([520, 680])
@@ -764,11 +715,9 @@ class FSMDesignerWidget(QWidget):
         self.combo_reset.blockSignals(False)
         self.combo_encoding.blockSignals(False)
 
-        self._populate_ports_table()
         self._populate_states_table()
         self._populate_trans_table()
         self.fsm_scene.rebuild_scene()
-        self.update_sv_code()
         self.run_validation()
 
     def reset_type_to_str(self, r: ResetType) -> str:
@@ -780,45 +729,6 @@ class FSMDesignerWidget(QWidget):
         self.fsm.reset_type = ResetType(self.combo_reset.currentText())
         self.fsm.encoding = FSMEncoding(self.combo_encoding.currentText())
         self.fsm_scene.rebuild_scene()
-        self.update_sv_code()
-
-    def _populate_ports_table(self):
-        self.table_ports.blockSignals(True)
-        all_ports = self.fsm.inputs + self.fsm.outputs
-        self.table_ports.setRowCount(len(all_ports))
-        for row, p in enumerate(all_ports):
-            self.table_ports.setItem(row, 0, QTableWidgetItem(p.name))
-            self.table_ports.setItem(row, 1, QTableWidgetItem(p.direction))
-            self.table_ports.setItem(row, 2, QTableWidgetItem(str(p.width)))
-            self.table_ports.setItem(row, 3, QTableWidgetItem(p.default_val))
-        self.table_ports.blockSignals(False)
-
-    def _sync_ports_from_table(self):
-        inputs = []
-        outputs = []
-        for r in range(self.table_ports.rowCount()):
-            name_item = self.table_ports.item(r, 0)
-            dir_item = self.table_ports.item(r, 1)
-            w_item = self.table_ports.item(r, 2)
-            def_item = self.table_ports.item(r, 3)
-
-            name = name_item.text().strip() if name_item else f"port_{r}"
-            direction = dir_item.text().strip().lower() if dir_item else "input"
-            try:
-                width = int(w_item.text()) if w_item else 1
-            except ValueError:
-                width = 1
-            default_val = def_item.text().strip() if def_item else "0"
-
-            p = Port(name=name, direction=direction, width=width, default_val=default_val)
-            if direction == "output":
-                outputs.append(p)
-            else:
-                inputs.append(p)
-
-        self.fsm.inputs = inputs
-        self.fsm.outputs = outputs
-        self.update_sv_code()
 
     def _populate_states_table(self):
         self.table_states.blockSignals(True)
@@ -854,7 +764,6 @@ class FSMDesignerWidget(QWidget):
                 s.moore_outputs = outs_dict
 
         self.fsm_scene.rebuild_scene()
-        self.update_sv_code()
 
     def _populate_trans_table(self):
         self.table_trans.blockSignals(True)
@@ -899,24 +808,6 @@ class FSMDesignerWidget(QWidget):
                 t.mealy_outputs = m_dict
 
         self.fsm_scene.rebuild_scene()
-        self.update_sv_code()
-
-    def add_port(self):
-        self.table_ports.blockSignals(True)
-        r = self.table_ports.rowCount()
-        self.table_ports.insertRow(r)
-        self.table_ports.setItem(r, 0, QTableWidgetItem(f"sig_{r}"))
-        self.table_ports.setItem(r, 1, QTableWidgetItem("input"))
-        self.table_ports.setItem(r, 2, QTableWidgetItem("1"))
-        self.table_ports.setItem(r, 3, QTableWidgetItem("1'b0"))
-        self.table_ports.blockSignals(False)
-        self._sync_ports_from_table()
-
-    def del_port(self):
-        r = self.table_ports.currentRow()
-        if r >= 0:
-            self.table_ports.removeRow(r)
-            self._sync_ports_from_table()
 
     def add_state(self):
         idx = len(self.fsm.states)
@@ -926,7 +817,6 @@ class FSMDesignerWidget(QWidget):
         self._populate_states_table()
         self.fsm_scene.rebuild_scene()
         self.auto_layout()
-        self.update_sv_code()
 
     def del_state(self):
         r = self.table_states.currentRow()
@@ -938,7 +828,6 @@ class FSMDesignerWidget(QWidget):
             self._populate_states_table()
             self._populate_trans_table()
             self.fsm_scene.rebuild_scene()
-            self.update_sv_code()
 
     def add_transition(self):
         if not self.fsm.states:
@@ -949,7 +838,6 @@ class FSMDesignerWidget(QWidget):
         self.fsm.transitions.append(Transition(source=src, target=dst, condition="else"))
         self._populate_trans_table()
         self.fsm_scene.rebuild_scene()
-        self.update_sv_code()
 
     def del_transition(self):
         r = self.table_trans.currentRow()
@@ -957,7 +845,6 @@ class FSMDesignerWidget(QWidget):
             del self.fsm.transitions[r]
             self._populate_trans_table()
             self.fsm_scene.rebuild_scene()
-            self.update_sv_code()
 
     def auto_layout(self):
         self.fsm_scene.auto_layout_circular()
@@ -985,24 +872,6 @@ class FSMDesignerWidget(QWidget):
             else:
                 item.setForeground(QColor(50, 100, 180))
             self.list_issues.addItem(item)
-
-    def update_sv_code(self):
-        style = "three_always" if self.combo_hdl_style.currentIndex() == 1 else "two_always"
-        reg_out = self.chk_registered_out.isChecked()
-        code = SystemVerilogGenerator.generate(self.fsm, style=style, register_outputs=reg_out)
-        self.text_sv.setPlainText(code)
-
-    def copy_sv_code(self):
-        from PySide6.QtWidgets import QApplication
-        QApplication.clipboard().setText(self.text_sv.toPlainText())
-        QMessageBox.information(self, "Copiado", "Código SystemVerilog copiado al portapapeles.")
-
-    def save_sv_file(self):
-        path, _ = QFileDialog.getSaveFileName(self, "Guardar Archivo SystemVerilog", f"{self.fsm.name}.sv", "SystemVerilog (*.sv)")
-        if path:
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(self.text_sv.toPlainText())
-            QMessageBox.information(self, "Guardado", f"Archivo guardado exitosamente en:\n{path}")
 
     def load_traffic_preset(self):
         self.fsm = FSM(
