@@ -317,6 +317,34 @@ def parse_slice_width(slice_str: str) -> int:
 
 
 # Helper Component Factory to instantiate compliant standard symbols
+def compute_mux_input_offsets(num_inputs: int, height: float) -> List[float]:
+    """
+    Computes grid-aligned offsets for MUX inputs.
+    Grid size is 20px. Pins are placed at multiples of 20px, symmetric around height / 2.
+    """
+    if num_inputs <= 0:
+        return []
+    available = [float(y) for y in range(20, int(height), 20)]
+    if len(available) == num_inputs:
+        return [y / height for y in available]
+    elif len(available) > num_inputs:
+        if num_inputs % 2 == 0 and len(available) % 2 == 1:
+            mid_idx = len(available) // 2
+            half = num_inputs // 2
+            top_slots = available[mid_idx - half:mid_idx]
+            bot_slots = available[mid_idx + 1:mid_idx + 1 + half]
+            chosen = top_slots + bot_slots
+            if len(chosen) == num_inputs:
+                return [y / height for y in chosen]
+        step = (len(available) - 1) / (num_inputs - 1) if num_inputs > 1 else 0
+        chosen_indices = [round(i * step) for i in range(num_inputs)] if num_inputs > 1 else [len(available) // 2]
+        if len(set(chosen_indices)) == num_inputs:
+            return [available[idx] / height for idx in chosen_indices]
+        return [available[i] / height for i in range(num_inputs)]
+    else:
+        return [(i + 1) / (num_inputs + 1) for i in range(num_inputs)]
+
+
 class ComponentFactory:
     @staticmethod
     def create_mux(x: float = 0, y: float = 0, num_inputs: int = 2, width: int = 1,
@@ -341,11 +369,13 @@ class ComponentFactory:
         if mux_h is not None:
             final_h = max(min_allowed_h, float(mux_h))
         else:
-            final_h = max(80.0, num_inputs * 30.0)
+            raw_h = max(80.0, num_inputs * 30.0)
+            final_h = round(raw_h / 20.0) * 20.0
 
-        # Input pins on left (wide side)
+        # Input pins on left (wide side) with grid-aligned offsets
+        input_offsets = compute_mux_input_offsets(num_inputs, final_h)
         for i, in_name in enumerate(input_names):
-            offset = (i + 1) / (num_inputs + 1)
+            offset = input_offsets[i] if i < len(input_offsets) else (i + 1) / (num_inputs + 1)
             pins.append(RTLPin(
                 id=f"{comp_id}_in_{i}",
                 name=in_name,

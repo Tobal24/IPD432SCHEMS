@@ -57,9 +57,9 @@ class RTLPinItem(QGraphicsItem):
         if ctype == ComponentType.MUX:
             if not is_mirrored:
                 if side == PinSide.LEFT:
-                    pos = QPointF(0, h * off)
+                    pos = QPointF(0, snap(h * off))
                 elif side == PinSide.RIGHT:
-                    pos = QPointF(w, h * 0.2 + (h * 0.6) * off)
+                    pos = QPointF(w, snap(h * 0.2 + (h * 0.6) * off))
                 elif side == PinSide.TOP:
                     y_edge = (h * 0.2) * off
                     pos = QPointF(w * off, y_edge)
@@ -68,9 +68,9 @@ class RTLPinItem(QGraphicsItem):
                     pos = QPointF(w * off, y_edge)
             else:
                 if side == PinSide.LEFT:
-                    pos = QPointF(0, h * 0.2 + (h * 0.6) * off)
+                    pos = QPointF(0, snap(h * 0.2 + (h * 0.6) * off))
                 elif side == PinSide.RIGHT:
-                    pos = QPointF(w, h * off)
+                    pos = QPointF(w, snap(h * off))
                 elif side == PinSide.TOP:
                     y_edge = (h * 0.2) * (1.0 - off)
                     pos = QPointF(w * off, y_edge)
@@ -1048,6 +1048,7 @@ class RTLWireItem(QGraphicsItem):
 
     def itemChange(self, change, value):
         if change == QGraphicsItem.ItemSelectedHasChanged:
+            self.setZValue(2 if self.isSelected() else -1)
             self.update_handles()
         return super().itemChange(change, value)
 

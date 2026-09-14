@@ -19,7 +19,8 @@ from PySide6.QtWidgets import (
 )
 from app.core.rtl_model import (
     RTLSchematic, RTLComponent, RTLWire, RTLPin, ComponentFactory,
-    ComponentType, PinSide, PinDirection, parse_slice_width
+    ComponentType, PinSide, PinDirection, parse_slice_width,
+    compute_mux_input_offsets
 )
 from app.gui.rtl_canvas import RTLGraphicsScene, RTLGraphicsView, compute_manhattan_path
 from app.gui.rtl_items import RTLComponentItem, RTLWireItem, snap
@@ -1211,8 +1212,9 @@ class RTLEditorWidget(QWidget):
             comp.properties["sel_side"] = sel_side_str
 
             new_pins = []
+            input_offsets = compute_mux_input_offsets(num_inputs, comp.height)
             for i, in_name in enumerate(input_names):
-                offset = (i + 1) / (num_inputs + 1)
+                offset = input_offsets[i] if i < len(input_offsets) else (i + 1) / (num_inputs + 1)
                 new_pins.append(RTLPin(
                     id=f"{comp.id}_in_{i}",
                     name=in_name,
@@ -1389,6 +1391,10 @@ class RTLEditorWidget(QWidget):
             comp.pins = new_pins
             comp_item.prepareGeometryChange()
             comp_item.rebuild_pins()
+            for w_item in self.scene.wire_items.values():
+                w = w_item.model
+                if w.source_comp_id == comp.id or w.target_comp_id == comp.id:
+                    w.manual_routing = False
             if hasattr(self.scene, "on_component_moved"):
                 self.scene.on_component_moved(comp_item)
             comp_item.update()

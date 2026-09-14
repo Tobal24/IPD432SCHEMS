@@ -27,6 +27,30 @@ from app.gui.rtl_items import (
 )
 
 
+def _clean_path(pts: List[Tuple[float, float]]) -> List[Tuple[float, float]]:
+    if len(pts) <= 2:
+        return pts
+    # Deduplicate adjacent identical points
+    cleaned = [pts[0]]
+    for p in pts[1:]:
+        if abs(p[0] - cleaned[-1][0]) > 0.1 or abs(p[1] - cleaned[-1][1]) > 0.1:
+            cleaned.append((round(p[0], 2), round(p[1], 2)))
+    if len(cleaned) <= 2:
+        return cleaned
+    # Collapse collinear segments
+    res = [cleaned[0]]
+    for i in range(1, len(cleaned) - 1):
+        prev_p = res[-1]
+        curr_p = cleaned[i]
+        next_p = cleaned[i + 1]
+        is_horiz = abs(prev_p[1] - curr_p[1]) < 0.1 and abs(curr_p[1] - next_p[1]) < 0.1
+        is_vert = abs(prev_p[0] - curr_p[0]) < 0.1 and abs(curr_p[0] - next_p[0]) < 0.1
+        if not (is_horiz or is_vert):
+            res.append(curr_p)
+    res.append(cleaned[-1])
+    return res
+
+
 def compute_manhattan_path(
     p1: QPointF, side1: PinSide,
     p2: QPointF, side2: PinSide
@@ -34,58 +58,199 @@ def compute_manhattan_path(
     """
     Computes an orthogonal (Manhattan) path complying strictly with ELO212.
     Endpoints anchor EXACTLY at pin centers (zero offset gap).
+    Respects pin normal directions so wires NEVER route through or behind components.
     All segments are strictly horizontal or vertical.
     """
     x1, y1 = p1.x(), p1.y()
     x2, y2 = p2.x(), p2.y()
 
-    # Direct line if already horizontally or vertically aligned
-    if abs(x1 - x2) < 0.5 or abs(y1 - y2) < 0.5:
-        return [(x1, y1), (x2, y2)]
+    # Direct line if already horizontally or vertically aligned AND matches outward pin normals
+    if abs(y1 - y2) < 0.5:
+        if x1 < x2 and side1 != PinSide.LEFT and side2 != PinSide.RIGHT:
+            return [(x1, y1), (x2, y2)]
+        if x1 > x2 and side1 != PinSide.RIGHT and side2 != PinSide.LEFT:
+            return [(x1, y1), (x2, y2)]
+
+    if abs(x1 - x2) < 0.5:
+        if y1 < y2 and side1 != PinSide.TOP and side2 != PinSide.BOTTOM:
+            return [(x1, y1), (x2, y2)]
+        if y1 > y2 and side1 != PinSide.BOTTOM and side2 != PinSide.TOP:
+            return [(x1, y1), (x2, y2)]
 
     pts: List[Tuple[float, float]] = [(x1, y1)]
 
-    # Forward flow (standard left-to-right from output to input)
-    if x1 < x2 - 15 and side1 == PinSide.RIGHT and side2 == PinSide.LEFT:
-        mid_x = (x1 + x2) / 2.0
-        snapped_mid = snap(mid_x)
-        if x1 + 10 < snapped_mid < x2 - 10:
-            mid_x = snapped_mid
-        pts.append((mid_x, y1))
-        pts.append((mid_x, y2))
-        pts.append((x2, y2))
-        return pts
+    # --- Group 1: side1 == RIGHT ---
+    if side1 == PinSide.RIGHT:
+        if side2 == PinSide.LEFT:
+            if x1 < x2 - 15:
+                mid_x = (x1 + x2) / 2.0
+                snapped_mid = snap(mid_x)
+                if x1 + 10 < snapped_mid < x2 - 10:
+                    mid_x = snapped_mid
+                pts.append((mid_x, y1))
+                pts.append((mid_x, y2))
+            else:
+                y_detour = snap(min(y1, y2) - 50.0) if min(y1, y2) > 60 else snap(max(y1, y2) + 60.0)
+                x_out = snap(x1 + 25.0)
+                x_in = snap(x2 - 25.0)
+                pts.extend([(x_out, y1), (x_out, y_detour), (x_in, y_detour), (x_in, y2)])
+        elif side2 == PinSide.RIGHT:
+            x_turn = snap(max(x1, x2) + 25.0)
+            if x1 < x2:
+                y_detour = snap(min(y1, y2) - 30.0) if min(y1, y2) > 60 else snap(max(y1, y2) + 30.0)
+                mid_x = snap((x1 + x2 - 40.0) / 2.0) if x1 < x2 - 40 else snap(x1 + 20.0)
+                pts.extend([(mid_x, y1), (mid_x, y_detour), (x_turn, y_detour), (x_turn, y2)])
+            else:
+                pts.extend([(x_turn, y1), (x_turn, y2)])
+        elif side2 == PinSide.TOP:
+            if x1 < x2 and y1 < y2:
+                pts.append((x2, y1))
+            elif x1 < x2:
+                y_above = snap(y2 - 20.0)
+                mid_x = snap((x1 + x2) / 2.0)
+                if mid_x >= x2 - 10:
+                    mid_x = snap(x1 + 20.0)
+                pts.extend([(mid_x, y1), (mid_x, y_above), (x2, y_above)])
+            else:
+                x_out = snap(x1 + 20.0)
+                y_above = snap(min(y1, y2) - 30.0)
+                pts.extend([(x_out, y1), (x_out, y_above), (x2, y_above)])
+        elif side2 == PinSide.BOTTOM:
+            if x1 < x2 and y1 > y2:
+                pts.append((x2, y1))
+            elif x1 < x2:
+                y_below = snap(y2 + 20.0)
+                mid_x = snap((x1 + x2) / 2.0)
+                if mid_x >= x2 - 10:
+                    mid_x = snap(x1 + 20.0)
+                pts.extend([(mid_x, y1), (mid_x, y_below), (x2, y_below)])
+            else:
+                x_out = snap(x1 + 20.0)
+                y_below = snap(max(y1, y2) + 30.0)
+                pts.extend([(x_out, y1), (x_out, y_below), (x2, y_below)])
 
-    # Control pins (top/bottom)
-    if side1 in (PinSide.TOP, PinSide.BOTTOM) and side2 in (PinSide.LEFT, PinSide.RIGHT):
-        pts.append((x1, y2))
-        pts.append((x2, y2))
-        return pts
+    # --- Group 2: side1 == LEFT ---
+    elif side1 == PinSide.LEFT:
+        if side2 == PinSide.RIGHT:
+            if x1 > x2 + 15:
+                mid_x = (x1 + x2) / 2.0
+                snapped_mid = snap(mid_x)
+                if x2 + 10 < snapped_mid < x1 - 10:
+                    mid_x = snapped_mid
+                pts.append((mid_x, y1))
+                pts.append((mid_x, y2))
+            else:
+                y_detour = snap(min(y1, y2) - 50.0) if min(y1, y2) > 60 else snap(max(y1, y2) + 60.0)
+                x_out = snap(x1 - 25.0)
+                x_in = snap(x2 + 25.0)
+                pts.extend([(x_out, y1), (x_out, y_detour), (x_in, y_detour), (x_in, y2)])
+        elif side2 == PinSide.LEFT:
+            x_turn = snap(min(x1, x2) - 25.0)
+            if x1 > x2:
+                y_detour = snap(min(y1, y2) - 30.0) if min(y1, y2) > 60 else snap(max(y1, y2) + 30.0)
+                mid_x = snap((x1 + x2 + 40.0) / 2.0) if x1 > x2 + 40 else snap(x1 - 20.0)
+                pts.extend([(mid_x, y1), (mid_x, y_detour), (x_turn, y_detour), (x_turn, y2)])
+            else:
+                pts.extend([(x_turn, y1), (x_turn, y2)])
+        elif side2 == PinSide.TOP:
+            if x1 > x2 and y1 < y2:
+                pts.append((x2, y1))
+            elif x1 > x2:
+                y_above = snap(y2 - 20.0)
+                mid_x = snap((x1 + x2) / 2.0)
+                if mid_x <= x2 + 10:
+                    mid_x = snap(x1 - 20.0)
+                pts.extend([(mid_x, y1), (mid_x, y_above), (x2, y_above)])
+            else:
+                x_out = snap(x1 - 20.0)
+                y_above = snap(min(y1, y2) - 30.0)
+                pts.extend([(x_out, y1), (x_out, y_above), (x2, y_above)])
+        elif side2 == PinSide.BOTTOM:
+            if x1 > x2 and y1 > y2:
+                pts.append((x2, y1))
+            elif x1 > x2:
+                y_below = snap(y2 + 20.0)
+                mid_x = snap((x1 + x2) / 2.0)
+                if mid_x <= x2 + 10:
+                    mid_x = snap(x1 - 20.0)
+                pts.extend([(mid_x, y1), (mid_x, y_below), (x2, y_below)])
+            else:
+                x_out = snap(x1 - 20.0)
+                y_below = snap(max(y1, y2) + 30.0)
+                pts.extend([(x_out, y1), (x_out, y_below), (x2, y_below)])
 
-    if side2 in (PinSide.TOP, PinSide.BOTTOM) and side1 in (PinSide.LEFT, PinSide.RIGHT):
-        pts.append((x2, y1))
-        pts.append((x2, y2))
-        return pts
+    # --- Group 3: side1 == TOP ---
+    elif side1 == PinSide.TOP:
+        if side2 == PinSide.LEFT:
+            if y1 > y2 and x1 < x2:
+                pts.append((x1, y2))
+            elif x1 < x2:
+                y_up = snap(y1 - 20.0)
+                mid_x = snap((x1 + x2) / 2.0)
+                pts.extend([(x1, y_up), (mid_x, y_up), (mid_x, y2)])
+            else:
+                y_up = snap(min(y1, y2) - 25.0)
+                x_in = snap(x2 - 25.0)
+                pts.extend([(x1, y_up), (x_in, y_up), (x_in, y2)])
+        elif side2 == PinSide.RIGHT:
+            if y1 > y2 and x1 > x2:
+                pts.append((x1, y2))
+            elif x1 > x2:
+                y_up = snap(y1 - 20.0)
+                mid_x = snap((x1 + x2) / 2.0)
+                pts.extend([(x1, y_up), (mid_x, y_up), (mid_x, y2)])
+            else:
+                y_up = snap(min(y1, y2) - 25.0)
+                x_in = snap(x2 + 25.0)
+                pts.extend([(x1, y_up), (x_in, y_up), (x_in, y2)])
+        elif side2 == PinSide.TOP:
+            y_turn = snap(min(y1, y2) - 25.0)
+            pts.extend([(x1, y_turn), (x2, y_turn)])
+        elif side2 == PinSide.BOTTOM:
+            y_up = snap(y1 - 25.0)
+            y_down = snap(y2 + 25.0)
+            x_mid = snap((x1 + x2) / 2.0)
+            pts.extend([(x1, y_up), (x_mid, y_up), (x_mid, y_down), (x2, y_down)])
 
-    # Feedback loop (x2 <= x1): route around components
-    if x2 <= x1:
-        y_detour = snap(min(y1, y2) - 50.0) if min(y1, y2) > 60 else snap(max(y1, y2) + 60.0)
-        x_out = x1 + 25.0 if side1 == PinSide.RIGHT else x1 - 25.0
-        x_in = x2 - 25.0 if side2 == PinSide.LEFT else x2 + 25.0
+    # --- Group 4: side1 == BOTTOM ---
+    elif side1 == PinSide.BOTTOM:
+        if side2 == PinSide.LEFT:
+            if y1 < y2 and x1 < x2:
+                pts.append((x1, y2))
+            elif x1 < x2:
+                y_down = snap(y1 + 20.0)
+                mid_x = snap((x1 + x2) / 2.0)
+                pts.extend([(x1, y_down), (mid_x, y_down), (mid_x, y2)])
+            else:
+                y_down = snap(max(y1, y2) + 25.0)
+                x_in = snap(x2 - 25.0)
+                pts.extend([(x1, y_down), (x_in, y_down), (x_in, y2)])
+        elif side2 == PinSide.RIGHT:
+            if y1 < y2 and x1 > x2:
+                pts.append((x1, y2))
+            elif x1 > x2:
+                y_down = snap(y1 + 20.0)
+                mid_x = snap((x1 + x2) / 2.0)
+                pts.extend([(x1, y_down), (mid_x, y_down), (mid_x, y2)])
+            else:
+                y_down = snap(max(y1, y2) + 25.0)
+                x_in = snap(x2 + 25.0)
+                pts.extend([(x1, y_down), (x_in, y_down), (x_in, y2)])
+        elif side2 == PinSide.BOTTOM:
+            y_turn = snap(max(y1, y2) + 25.0)
+            pts.extend([(x1, y_turn), (x2, y_turn)])
+        elif side2 == PinSide.TOP:
+            if y1 < y2 - 15:
+                mid_y = snap((y1 + y2) / 2.0)
+                pts.extend([(x1, mid_y), (x2, mid_y)])
+            else:
+                y_down = snap(y1 + 25.0)
+                y_up = snap(y2 - 25.0)
+                x_mid = snap((x1 + x2) / 2.0)
+                pts.extend([(x1, y_down), (x_mid, y_down), (x_mid, y_up), (x2, y_up)])
 
-        pts.append((x_out, y1))
-        pts.append((x_out, y_detour))
-        pts.append((x_in, y_detour))
-        pts.append((x_in, y2))
-        pts.append((x2, y2))
-        return pts
-
-    # Default 2-bend orthogonal routing
-    mid_x = (x1 + x2) / 2.0
-    pts.append((mid_x, y1))
-    pts.append((mid_x, y2))
     pts.append((x2, y2))
-    return pts
+    return _clean_path(pts)
 
 
 class RTLGraphicsScene(QGraphicsScene):
@@ -374,6 +539,10 @@ class RTLGraphicsScene(QGraphicsScene):
             comp.properties["rotation"] = str(new_rot)
             self.apply_operator_rotation(comp, new_rot)
             op_item.rebuild_pins()
+            for w_item in self.wire_items.values():
+                w = w_item.model
+                if w.source_comp_id == comp.id or w.target_comp_id == comp.id:
+                    w.manual_routing = False
             self.on_component_moved(op_item)
             op_item.update()
 

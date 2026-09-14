@@ -890,6 +890,125 @@ class TestGUIIntegration(unittest.TestCase):
         self.assertIn("LC", outs)
         self.assertIn("TIMER_EN", outs)
 
+    def test_constant_to_mux_horizontal_wire(self):
+        """Verifies that connecting a Constant to a MUX produces a completely horizontal wire."""
+        scene = self.win.tab_rtl.scene
+        # Add MUX at (300, 200) with 2 inputs
+        mux = ComponentFactory.create_mux(300, 200, num_inputs=2)
+        mux_item = scene.add_component(mux)
+
+        # Input 0 should be at Y = 220.0, Input 1 at Y = 260.0
+        in0_pin = mux_item.pin_items[0]
+        in1_pin = mux_item.pin_items[1]
+        self.assertEqual(in0_pin.scenePos().y(), 220.0)
+        self.assertEqual(in1_pin.scenePos().y(), 260.0)
+
+        # Add Constant 0 at (100, 200) -> pin Y = 220.0
+        c0 = ComponentFactory.create_constant(100, 200, "1'b0")
+        c0_item = scene.add_component(c0)
+        c0_pin = c0_item.pin_items[0]
+        self.assertEqual(c0_pin.scenePos().y(), 220.0)
+
+        # Wire c0 to in0
+        scene.start_wiring(c0_pin)
+        scene.finish_wiring(in0_pin)
+        wire0 = scene.schematic.wires[-1]
+        self.assertEqual(len(wire0.points), 2)
+        self.assertEqual(wire0.points[0][1], wire0.points[1][1])
+        self.assertEqual(wire0.points[0][1], 220.0)
+
+        # Add Constant 1 at (100, 240) -> pin Y = 260.0
+        c1 = ComponentFactory.create_constant(100, 240, "1'b1")
+        c1_item = scene.add_component(c1)
+        c1_pin = c1_item.pin_items[0]
+        self.assertEqual(c1_pin.scenePos().y(), 260.0)
+
+        # Wire c1 to in1
+        scene.start_wiring(c1_pin)
+        scene.finish_wiring(in1_pin)
+        wire1 = scene.schematic.wires[-1]
+        self.assertEqual(len(wire1.points), 2)
+        self.assertEqual(wire1.points[0][1], wire1.points[1][1])
+        self.assertEqual(wire1.points[0][1], 260.0)
+
+    def test_rotated_operator_wire_outside_bounds(self):
+        """Verifies that wires connected to rotated circular operators do not penetrate inside the operator body."""
+        scene = self.win.tab_rtl.scene
+        # 90° rotated operator at (300, 200), size 60: bounds [300, 360] x [200, 260]
+        op90 = ComponentFactory.create_operator(300, 200, op="+", rotation=90)
+        op_item = scene.add_component(op90)
+
+        # Pin A is on TOP at (315, 200)
+        pin_a = next(pi for pi in op_item.pin_items if pi.pin.name == "A")
+        self.assertEqual(pin_a.scenePos().y(), 200.0)
+
+        # Constant at (100, 200), pin at (180, 220)
+        c = ComponentFactory.create_constant(100, 200, "1'b0")
+        c_item = scene.add_component(c)
+        c_pin = c_item.pin_items[0]
+
+        scene.start_wiring(c_pin)
+        scene.finish_wiring(pin_a)
+        wire = scene.schematic.wires[-1]
+
+        # Check that no intermediate segments pass through the interior of the circle:
+        # interior is x in (305, 355) and y in (205, 255)
+        for i in range(len(wire.points) - 1):
+            p_start = wire.points[i]
+            p_end = wire.points[i + 1]
+            mid_x = (p_start[0] + p_end[0]) / 2.0
+            mid_y = (p_start[1] + p_end[1]) / 2.0
+            is_inside = (305 < mid_x < 355) and (205 < mid_y < 255)
+            self.assertFalse(is_inside, f"Wire segment {p_start}->{p_end} passes inside operator body!")
+
+    def test_rotated_operator_existing_wires_reroute(self):
+        """Verifies that rotating an operator with an existing wire clears manual_routing and reroutes cleanly."""
+        scene = self.win.tab_rtl.scene
+        op = ComponentFactory.create_operator(300, 200, op="+", rotation=0)
+        op_item = scene.add_component(op)
+        pin_a = next(pi for pi in op_item.pin_items if pi.pin.name == "A")
+
+        c = ComponentFactory.create_constant(100, 200, "1'b0")
+        c_item = scene.add_component(c)
+        c_pin = c_item.pin_items[0]
+
+        scene.start_wiring(c_pin)
+        scene.finish_wiring(pin_a)
+        wire = scene.schematic.wires[-1]
+        w_item = scene.wire_items[wire.id]
+
+        # Simulate manual adjustment
+        w_item.on_segment_dragged(0, QPointF(150, 150))
+        self.assertTrue(wire.manual_routing)
+
+        # Rotate operator 90°
+        scene.clearSelection()
+        op_item.setSelected(True)
+        scene.rotate_selected_operators()
+
+        # manual_routing should be reset and points recomputed
+        self.assertFalse(wire.manual_routing)
+        for i in range(len(wire.points) - 1):
+            p_start = wire.points[i]
+            p_end = wire.points[i + 1]
+            mid_x = (p_start[0] + p_end[0]) / 2.0
+            mid_y = (p_start[1] + p_end[1]) / 2.0
+            is_inside = (305 < mid_x < 355) and (205 < mid_y < 255)
+            self.assertFalse(is_inside, f"Rerouted wire segment {p_start}->{p_end} passes inside operator body!")
+
+    def test_wire_selection_z_value(self):
+        """Verifies that selecting a wire elevates its zValue to 2 for easy editing."""
+        scene = self.win.tab_rtl.scene
+        w_item = list(scene.wire_items.values())[0]
+        w_item.setSelected(False)
+        self.assertEqual(w_item.zValue(), -1)
+
+        w_item.setSelected(True)
+        self.assertEqual(w_item.zValue(), 2)
+
+        w_item.setSelected(False)
+        self.assertEqual(w_item.zValue(), -1)
+
 
 if __name__ == "__main__":
     unittest.main()
