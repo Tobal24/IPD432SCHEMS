@@ -24,7 +24,7 @@ from app.core.rtl_model import (
     compute_mux_input_offsets
 )
 from app.gui.rtl_canvas import RTLGraphicsScene, RTLGraphicsView, compute_manhattan_path
-from app.gui.rtl_items import RTLComponentItem, RTLWireItem, snap
+from app.gui.rtl_items import RTLComponentItem, RTLWireItem, snap, get_grid_size, set_grid_size
 
 
 class BlockPropertiesDialog(QDialog):
@@ -1008,7 +1008,32 @@ class RTLEditorWidget(QWidget):
         # -------------------------------------------------------------
         center_widget = QWidget()
         center_layout = QVBoxLayout(center_widget)
+        center_layout.setContentsMargins(0, 0, 0, 0)
+        center_layout.setSpacing(2)
 
+        # Top toolbar for canvas controls (Grid resolution, etc.)
+        top_bar = QHBoxLayout()
+        top_bar.setContentsMargins(8, 4, 8, 4)
+        top_bar.setSpacing(8)
+
+        lbl_grid = QLabel("📐 Grilla:")
+        lbl_grid.setStyleSheet("font-weight: bold; color: #24292f; font-size: 11px;")
+        self.combo_grid = QComboBox()
+        self.combo_grid.addItem("20px (Estándar)", 20.0)
+        self.combo_grid.addItem("10px (Media)", 10.0)
+        self.combo_grid.addItem("5px (Fina - Snap KiCad)", 5.0)
+        self.combo_grid.setToolTip("Resolución de la grilla de alineación magnética. Atajo: tecla 'G'")
+        cur_grid = getattr(self.scene, "grid_size", 20.0)
+        idx_g = self.combo_grid.findData(cur_grid)
+        if idx_g >= 0:
+            self.combo_grid.setCurrentIndex(idx_g)
+        self.combo_grid.currentIndexChanged.connect(self._on_grid_combo_changed)
+
+        top_bar.addWidget(lbl_grid)
+        top_bar.addWidget(self.combo_grid)
+        top_bar.addStretch()
+
+        center_layout.addLayout(top_bar)
         center_layout.addWidget(self.view)
 
         self.lbl_status = QLabel("Listo. Haga clic en los pines de los componentes para trazar cables ortogonales.")
@@ -1020,6 +1045,20 @@ class RTLEditorWidget(QWidget):
         splitter.setSizes([260, 940])
 
         self.scene.selectionChanged.connect(self._on_selection_changed)
+        self.scene.grid_changed.connect(self._on_scene_grid_changed)
+
+    def _on_grid_combo_changed(self):
+        val = self.combo_grid.currentData()
+        if val is not None and hasattr(self.scene, "set_grid_size"):
+            if self.scene.grid_size != float(val):
+                self.scene.set_grid_size(float(val))
+
+    def _on_scene_grid_changed(self, size: float):
+        self.combo_grid.blockSignals(True)
+        idx = self.combo_grid.findData(size)
+        if idx >= 0:
+            self.combo_grid.setCurrentIndex(idx)
+        self.combo_grid.blockSignals(False)
 
     def _update_param_combos(self):
         self.combo_wire_param.blockSignals(True)
@@ -1206,8 +1245,8 @@ class RTLEditorWidget(QWidget):
             sel_side_str = dlg.get_sel_side()
             s_side = PinSide.TOP if sel_side_str == "TOP" else PinSide.BOTTOM
 
-            comp.width = float(dlg.spin_width.value())
-            comp.height = float(dlg.spin_height.value())
+            comp.width = float(snap(dlg.spin_width.value()))
+            comp.height = float(snap(dlg.spin_height.value()))
             comp.properties["num_inputs"] = str(num_inputs)
             comp.properties["input_names"] = json.dumps(input_names)
             comp.properties["sel_side"] = sel_side_str
@@ -1325,7 +1364,7 @@ class RTLEditorWidget(QWidget):
         if dlg.exec():
             self.scene.push_undo_state()
             sym, is_red, is_unary, out_1bit = dlg.get_selected_op_info()
-            new_size = dlg.get_size()
+            new_size = float(snap(dlg.get_size()))
             new_rot = dlg.get_rotation()
             lbl = dlg.get_label()
 
@@ -1441,12 +1480,14 @@ class RTLEditorWidget(QWidget):
 
     def _get_spawn_pos(self, offset_x=0.0, offset_y=0.0) -> Tuple[float, float]:
         center = self.view.mapToScene(self.view.viewport().rect().center())
-        base_x = round((center.x() + offset_x) / 20.0) * 20.0
-        base_y = round((center.y() + offset_y) / 20.0) * 20.0
+        g = getattr(self.scene, "grid_size", 20.0)
+        base_x = snap(center.x() + offset_x, g)
+        base_y = snap(center.y() + offset_y, g)
         cur_x, cur_y = base_x, base_y
-        while any(snap(c.x) == cur_x and snap(c.y) == cur_y for c in self.scene.schematic.components):
-            cur_x += 40.0
-            cur_y += 40.0
+        step = max(g * 2, 20.0)
+        while any(snap(c.x, g) == cur_x and snap(c.y, g) == cur_y for c in self.scene.schematic.components):
+            cur_x += step
+            cur_y += step
         return cur_x, cur_y
 
     def spawn_input_port(self):

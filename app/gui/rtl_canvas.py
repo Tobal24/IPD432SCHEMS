@@ -24,7 +24,8 @@ from app.core.rtl_model import (
     ComponentFactory, ComponentType, PinSide, PinDirection
 )
 from app.gui.rtl_items import (
-    RTLComponentItem, RTLWireItem, RTLPinItem, RTLJunctionItem, GRID_SIZE, snap
+    RTLComponentItem, RTLWireItem, RTLPinItem, RTLJunctionItem, GRID_SIZE, snap,
+    set_grid_size, get_grid_size
 )
 
 
@@ -256,12 +257,14 @@ def compute_manhattan_path(
 
 class RTLGraphicsScene(QGraphicsScene):
     status_message = Signal(str)
+    grid_changed = Signal(float)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setSceneRect(-2000, -2000, 4000, 4000)
         self.setItemIndexMethod(QGraphicsScene.NoIndex)
         self.schematic = RTLSchematic()
+        self.grid_size: float = get_grid_size()
 
         self.comp_items: dict[str, RTLComponentItem] = {}
         self.wire_items: dict[str, RTLWireItem] = {}
@@ -281,6 +284,29 @@ class RTLGraphicsScene(QGraphicsScene):
         self.wire_start_pin: Optional[RTLPinItem] = None
         self.temp_wire_points: List[Tuple[float, float]] = []
         self.temp_wire_pos: Optional[QPointF] = None
+
+    def set_grid_size(self, size: float):
+        if size not in (5.0, 10.0, 20.0):
+            size = 20.0
+        self.grid_size = float(size)
+        set_grid_size(self.grid_size)
+        # Update pin positions of all components so they snap to the active grid
+        for comp_item in self.comp_items.values():
+            for pi in comp_item.pin_items:
+                pi.update_position()
+        # Refresh non-manual wires
+        for w_item in self.wire_items.values():
+            if not w_item.model.manual_routing:
+                self.recompute_wire_path(w_item)
+        self.update()
+        self.grid_changed.emit(self.grid_size)
+        grid_labels = {20.0: "20px (Estándar)", 10.0: "10px (Media)", 5.0: "5px (Fina - Snap KiCad)"}
+        self.status_message.emit(f"Resolución de grilla cambiada a {grid_labels.get(self.grid_size, str(int(self.grid_size)) + 'px')}. (Tecla 'G' para alternar)")
+
+    def cycle_grid_size(self):
+        cycle = {20.0: 10.0, 10.0: 5.0, 5.0: 20.0}
+        next_size = cycle.get(self.grid_size, 20.0)
+        self.set_grid_size(next_size)
 
     def push_undo_state(self):
         snapshot = self.schematic.to_dict()
@@ -333,17 +359,19 @@ class RTLGraphicsScene(QGraphicsScene):
 
     def drawBackground(self, painter: QPainter, rect: QRectF):
         super().drawBackground(painter, rect)
-        # Clean dotted engineering grid
+        # KiCad standard: visual grid step avoids dense overcrowding when snap grid is fine (5px)
+        grid = int(self.grid_size)
+        visual_step = 10 if grid == 5 else grid
+
         painter.setPen(QPen(QColor(220, 225, 230), 1))
-        grid = int(GRID_SIZE)
 
-        left = int(math.floor(rect.left() / grid) * grid)
-        top = int(math.floor(rect.top() / grid) * grid)
-        right = int(math.ceil(rect.right() / grid) * grid)
-        bottom = int(math.ceil(rect.bottom() / grid) * grid)
+        left = int(math.floor(rect.left() / visual_step) * visual_step)
+        top = int(math.floor(rect.top() / visual_step) * visual_step)
+        right = int(math.ceil(rect.right() / visual_step) * visual_step)
+        bottom = int(math.ceil(rect.bottom() / visual_step) * visual_step)
 
-        for x in range(left, right, grid):
-            for y in range(top, bottom, grid):
+        for x in range(left, right, visual_step):
+            for y in range(top, bottom, visual_step):
                 painter.drawPoint(x, y)
 
     def add_component(self, comp: RTLComponent) -> RTLComponentItem:
@@ -803,6 +831,11 @@ class RTLGraphicsScene(QGraphicsScene):
                 self.reset_selected_labels()
             else:
                 self.reset_selected_wire_routing()
+            event.accept()
+            return
+
+        if event.key() == Qt.Key_G and not (event.modifiers() & (Qt.ControlModifier | Qt.AltModifier)):
+            self.cycle_grid_size()
             event.accept()
             return
 

@@ -321,11 +321,21 @@ def parse_slice_width(slice_str: str) -> int:
 def compute_mux_input_offsets(num_inputs: int, height: float) -> List[float]:
     """
     Computes grid-aligned offsets for MUX inputs.
-    Grid size is 20px. Pins are placed at multiples of 20px, symmetric around height / 2.
+    Tries 20px grid, then falls back to 10px or 5px grid if height is tight.
+    Pins are placed at multiples of grid spacing, symmetric around height / 2.
     """
     if num_inputs <= 0:
         return []
     available = [float(y) for y in range(20, int(height), 20)]
+    if len(available) < num_inputs:
+        available_10 = [float(y) for y in range(10, int(height), 10)]
+        if len(available_10) >= num_inputs:
+            available = available_10
+        else:
+            available_5 = [float(y) for y in range(5, int(height), 5)]
+            if len(available_5) >= num_inputs:
+                available = available_5
+
     if len(available) == num_inputs:
         return [y / height for y in available]
     elif len(available) > num_inputs:

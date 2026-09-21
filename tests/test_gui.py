@@ -223,10 +223,12 @@ class TestGUIIntegration(unittest.TestCase):
         mux_item = scene.add_component(mux)
         self.assertEqual(len(mux_item.pin_items), 5)
 
-        # Verify sel pin anchors directly on the sloped bottom edge (y = 0.9 * h), NOT floating at y = h
+        # Verify sel pin anchors on the sloped bottom edge strictly snapped to the active grid
         sel_pin_item = next(pi for pi in mux_item.pin_items if pi.pin.name == "sel")
-        expected_y = mux.height - (mux.height * 0.2) * 0.5 # 0.9 * h
-        self.assertAlmostEqual(sel_pin_item.pos().y(), expected_y, places=2)
+        from app.gui.rtl_items import snap, get_grid_size
+        expected_y = snap(mux.height - (mux.height * 0.2) * 0.5)
+        self.assertEqual(sel_pin_item.pos().y(), expected_y)
+        self.assertEqual(sel_pin_item.pos().y() % get_grid_size(), 0.0)
 
     def test_bus_splitter_elo212_branches(self):
         scene = self.win.tab_rtl.scene
@@ -752,15 +754,29 @@ class TestGUIIntegration(unittest.TestCase):
         pin_b_pos = item.pin_items[1].scenePos()
         pin_out_pos = item.pin_items[2].scenePos()
 
-        # Check distinct positions: A at y=110, B at y=130, Out at x=140, y=120
-        self.assertEqual((pin_a_pos.x(), pin_a_pos.y()), (100.0, 110.0))
-        self.assertEqual((pin_b_pos.x(), pin_b_pos.y()), (100.0, 130.0))
+        # Check distinct grid-aligned positions on 20px grid (A at y=100, B at y=140, Out at x=140, y=120)
+        self.assertEqual((pin_a_pos.x(), pin_a_pos.y()), (100.0, 100.0))
+        self.assertEqual((pin_b_pos.x(), pin_b_pos.y()), (100.0, 140.0))
         self.assertEqual((pin_out_pos.x(), pin_out_pos.y()), (140.0, 120.0))
 
         # None of the pins collide
         self.assertNotEqual((pin_a_pos.x(), pin_a_pos.y()), (pin_b_pos.x(), pin_b_pos.y()))
         self.assertNotEqual((pin_a_pos.x(), pin_a_pos.y()), (pin_out_pos.x(), pin_out_pos.y()))
         self.assertNotEqual((pin_b_pos.x(), pin_b_pos.y()), (pin_out_pos.x(), pin_out_pos.y()))
+
+        # Check positions on finer 10px and 5px grids: A at y=110, B at y=130, Out at y=120
+        scene.set_grid_size(10.0)
+        self.assertEqual((item.pin_items[0].scenePos().x(), item.pin_items[0].scenePos().y()), (100.0, 110.0))
+        self.assertEqual((item.pin_items[1].scenePos().x(), item.pin_items[1].scenePos().y()), (100.0, 130.0))
+        self.assertEqual((item.pin_items[2].scenePos().x(), item.pin_items[2].scenePos().y()), (140.0, 120.0))
+
+        scene.set_grid_size(5.0)
+        self.assertEqual((item.pin_items[0].scenePos().x(), item.pin_items[0].scenePos().y()), (100.0, 110.0))
+        self.assertEqual((item.pin_items[1].scenePos().x(), item.pin_items[1].scenePos().y()), (100.0, 130.0))
+        self.assertEqual((item.pin_items[2].scenePos().x(), item.pin_items[2].scenePos().y()), (140.0, 120.0))
+
+        # Reset back to 20px
+        scene.set_grid_size(20.0)
 
     def test_mux_compact_width(self):
         """Test that multiplexers use narrower width (50px instead of 70-80px) to save canvas space"""
@@ -1008,6 +1024,89 @@ class TestGUIIntegration(unittest.TestCase):
 
         w_item.setSelected(False)
         self.assertEqual(w_item.zValue(), -1)
+
+    def test_grid_size_switching_and_key_g(self):
+        """Verifies switching grid size between 20px, 10px, and 5px programmatically and via 'G' key shortcut."""
+        scene = self.win.tab_rtl.scene
+        editor = self.win.tab_rtl
+
+        # Start at 20.0
+        scene.set_grid_size(20.0)
+        self.assertEqual(scene.grid_size, 20.0)
+        self.assertEqual(editor.combo_grid.currentData(), 20.0)
+
+        # Cycle to 10.0
+        scene.cycle_grid_size()
+        self.assertEqual(scene.grid_size, 10.0)
+        self.assertEqual(editor.combo_grid.currentData(), 10.0)
+
+        # Cycle to 5.0
+        scene.cycle_grid_size()
+        self.assertEqual(scene.grid_size, 5.0)
+        self.assertEqual(editor.combo_grid.currentData(), 5.0)
+
+        # Cycle back to 20.0
+        scene.cycle_grid_size()
+        self.assertEqual(scene.grid_size, 20.0)
+        self.assertEqual(editor.combo_grid.currentData(), 20.0)
+
+        # Test key event 'G'
+        from PySide6.QtGui import QKeyEvent
+        from PySide6.QtCore import QEvent
+        event_g = QKeyEvent(QEvent.KeyPress, Qt.Key_G, Qt.NoModifier)
+        scene.keyPressEvent(event_g)
+        self.assertEqual(scene.grid_size, 10.0)
+
+        scene.keyPressEvent(event_g)
+        self.assertEqual(scene.grid_size, 5.0)
+
+        scene.keyPressEvent(event_g)
+        self.assertEqual(scene.grid_size, 20.0)
+
+    def test_mux_pins_strict_grid_alignment(self):
+        """Verifies that all MUX pins (inputs, outputs, and selector) are strictly grid-aligned across sizes and grids."""
+        scene = self.win.tab_rtl.scene
+
+        for g in (20.0, 10.0, 5.0):
+            scene.set_grid_size(g)
+            # Standard MUX
+            mux = ComponentFactory.create_mux(200, 200, num_inputs=2, width=1, sel_side="BOTTOM")
+            item = scene.add_component(mux)
+
+            for pi in item.pin_items:
+                pos = pi.scenePos()
+                self.assertEqual(pos.x() % g, 0.0, f"Grid {g}px: Pin {pi.pin.name} X {pos.x()} is not aligned!")
+                self.assertEqual(pos.y() % g, 0.0, f"Grid {g}px: Pin {pi.pin.name} Y {pos.y()} is not aligned!")
+
+            # Top selector MUX
+            mux_top = ComponentFactory.create_mux(400, 200, num_inputs=4, width=1, sel_side="TOP")
+            item_top = scene.add_component(mux_top)
+            for pi in item_top.pin_items:
+                pos = pi.scenePos()
+                self.assertEqual(pos.x() % g, 0.0, f"Grid {g}px Top: Pin {pi.pin.name} X {pos.x()} is not aligned!")
+                self.assertEqual(pos.y() % g, 0.0, f"Grid {g}px Top: Pin {pi.pin.name} Y {pos.y()} is not aligned!")
+
+        scene.set_grid_size(20.0)
+
+    def test_operator_pins_strict_grid_alignment_all_sizes(self):
+        """Verifies that all circular operator pins are strictly grid-aligned for all sizes (40, 60, 80) and rotations."""
+        scene = self.win.tab_rtl.scene
+
+        for g in (10.0, 5.0, 20.0):
+            scene.set_grid_size(g)
+            for size in (40.0, 60.0, 80.0):
+                for rot in (0, 90, 180, 270):
+                    op = ComponentFactory.create_operator(300, 300, op="+", size=size, rotation=rot)
+                    item = scene.add_component(op)
+
+                    for pi in item.pin_items:
+                        pos = pi.scenePos()
+                        self.assertEqual(pos.x() % g, 0.0,
+                            f"Grid {g}px, Size {size}px, Rot {rot}°: Pin {pi.pin.name} X {pos.x()} is not aligned!")
+                        self.assertEqual(pos.y() % g, 0.0,
+                            f"Grid {g}px, Size {size}px, Rot {rot}°: Pin {pi.pin.name} Y {pos.y()} is not aligned!")
+
+        scene.set_grid_size(20.0)
 
 
 if __name__ == "__main__":

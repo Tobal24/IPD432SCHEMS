@@ -30,8 +30,16 @@ from app.core.rtl_model import (
 
 GRID_SIZE = 20.0
 
-def snap(val: float) -> float:
-    return round(val / GRID_SIZE) * GRID_SIZE
+def set_grid_size(size: float):
+    global GRID_SIZE
+    GRID_SIZE = float(size)
+
+def get_grid_size() -> float:
+    return GRID_SIZE
+
+def snap(val: float, grid: Optional[float] = None) -> float:
+    g = grid if grid is not None else GRID_SIZE
+    return round(val / g) * g
 
 
 class RTLPinItem(QGraphicsItem):
@@ -55,47 +63,69 @@ class RTLPinItem(QGraphicsItem):
         ctype = self.parent_comp.model.type
 
         is_mirrored = getattr(self.parent_comp.model, "mirrored", False)
+        snapped_w = snap(w)
+        snapped_h = snap(h)
+
         if ctype == ComponentType.MUX:
+            # Enforce strict grid alignment for all MUX pins
             if not is_mirrored:
                 if side == PinSide.LEFT:
                     pos = QPointF(0, snap(h * off))
                 elif side == PinSide.RIGHT:
-                    pos = QPointF(w, snap(h * 0.2 + (h * 0.6) * off))
+                    pos = QPointF(snapped_w, snap(h * 0.2 + (h * 0.6) * off))
                 elif side == PinSide.TOP:
-                    y_edge = (h * 0.2) * off
-                    pos = QPointF(w * off, y_edge)
+                    y_edge = snap((h * 0.2) * off)
+                    pos = QPointF(snap(w * off), y_edge)
                 else: # BOTTOM
-                    y_edge = h - (h * 0.2) * off
-                    pos = QPointF(w * off, y_edge)
+                    y_edge = snap(h - (h * 0.2) * off)
+                    pos = QPointF(snap(w * off), y_edge)
             else:
                 if side == PinSide.LEFT:
                     pos = QPointF(0, snap(h * 0.2 + (h * 0.6) * off))
                 elif side == PinSide.RIGHT:
-                    pos = QPointF(w, snap(h * off))
+                    pos = QPointF(snapped_w, snap(h * off))
                 elif side == PinSide.TOP:
-                    y_edge = (h * 0.2) * (1.0 - off)
-                    pos = QPointF(w * off, y_edge)
+                    y_edge = snap((h * 0.2) * (1.0 - off))
+                    pos = QPointF(snap(w * off), y_edge)
                 else: # BOTTOM
-                    y_edge = h - (h * 0.2) * (1.0 - off)
-                    pos = QPointF(w * off, y_edge)
+                    y_edge = snap(h - (h * 0.2) * (1.0 - off))
+                    pos = QPointF(snap(w * off), y_edge)
         elif ctype == ComponentType.OPERATOR_CIRCLE:
+            # Enforce strict grid alignment for circular operators
+            same_side_pins = [p for p in self.parent_comp.model.pins if p.side == side]
+            dim = h if side in (PinSide.LEFT, PinSide.RIGHT) else w
+            if len(same_side_pins) > 1:
+                idx = same_side_pins.index(self.pin)
+                n = len(same_side_pins)
+                g = get_grid_size()
+                cand_positions = [snap(dim * p.offset) for p in same_side_pins]
+                if len(set(cand_positions)) < n:
+                    # Distribute cleanly with at least 1 grid step separation
+                    mid = snap(dim * 0.5)
+                    step = max(g, snap(dim / (n + 1)))
+                    raw_pos = snap(mid + (idx - (n - 1) / 2.0) * step)
+                else:
+                    raw_pos = snap(dim * off)
+            else:
+                raw_pos = snap(dim * off)
+
             if side == PinSide.LEFT:
-                pos = QPointF(0, h * off)
+                pos = QPointF(0, raw_pos)
             elif side == PinSide.RIGHT:
-                pos = QPointF(w, h * off)
+                pos = QPointF(snapped_w, raw_pos)
             elif side == PinSide.TOP:
-                pos = QPointF(w * off, 0)
+                pos = QPointF(raw_pos, 0)
             else: # BOTTOM
-                pos = QPointF(w * off, h)
+                pos = QPointF(raw_pos, snapped_h)
         else:
             if side == PinSide.LEFT:
                 pos = QPointF(0, snap(h * off))
             elif side == PinSide.RIGHT:
-                pos = QPointF(w, snap(h * off))
+                pos = QPointF(snapped_w, snap(h * off))
             elif side == PinSide.TOP:
                 pos = QPointF(snap(w * off), 0)
             else: # BOTTOM
-                pos = QPointF(snap(w * off), h)
+                pos = QPointF(snap(w * off), snapped_h)
 
         self.setPos(pos)
 
