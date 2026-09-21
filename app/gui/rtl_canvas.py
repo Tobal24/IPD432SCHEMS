@@ -716,8 +716,11 @@ class RTLGraphicsScene(QGraphicsScene):
         p2 = p2_item.scenePos()
         pts = compute_manhattan_path(p1, p1_item.pin.side, p2, p2_item.pin.side)
 
-        # Inherit bus width if either pin has width > 1
+        # Inherit bus width and parameter if either pin has width > 1 or width_param
+        width_param = p1_item.pin.width_param or p2_item.pin.width_param
         width = max(p1_item.pin.width, p2_item.pin.width)
+        if width_param and width_param in self.schematic.parameters:
+            width = self.schematic.parameters[width_param]
 
         self.push_undo_state()
         wire_model = RTLWire(
@@ -727,7 +730,8 @@ class RTLGraphicsScene(QGraphicsScene):
             target_comp_id=p2_item.parent_comp.model.id,
             target_pin_id=p2_item.pin.id,
             points=pts,
-            width=width
+            width=width,
+            width_param=width_param
         )
 
         self.schematic.wires.append(wire_model)
@@ -859,7 +863,19 @@ class RTLGraphicsScene(QGraphicsScene):
 
         if target_wire:
             menu = QMenu()
-            act_width = menu.addAction("📏 Definir Ancho de Bus (Bits)...")
+            menu_param = menu.addMenu("📐 Asignar Parámetro")
+            act_p_none = menu_param.addAction("(Ninguno - Manual)")
+            act_p_none.setCheckable(True)
+            act_p_none.setChecked(target_wire.model.width_param is None)
+
+            param_actions = {}
+            for p_name, p_val in sorted(self.schematic.parameters.items()):
+                p_act = menu_param.addAction(f"{p_name} ({p_val} bits)")
+                p_act.setCheckable(True)
+                p_act.setChecked(target_wire.model.width_param == p_name)
+                param_actions[p_act] = (p_name, p_val)
+
+            act_width = menu.addAction("📏 Definir Ancho Numérico...")
             act_reroute = menu.addAction("🔄 Restablecer Ruteo Automático (R)")
             act_relabel = menu.addAction("🏷️ Restablecer Posición de Etiqueta (Shift+R)")
             act_arrow = menu.addAction("➡️ Alternar Flecha de Dirección")
@@ -868,7 +884,21 @@ class RTLGraphicsScene(QGraphicsScene):
             menu.addSeparator()
             act_del = menu.addAction("🗑️ Eliminar Cable (Supr)")
             action = menu.exec(event.screenPos())
-            if action == act_width:
+            if action == act_p_none:
+                self.push_undo_state()
+                target_wire.model.width_param = None
+                target_wire.prepareGeometryChange()
+                target_wire.update()
+                self.status_message.emit("Parámetro del cable removido (modo manual).")
+            elif action in param_actions:
+                self.push_undo_state()
+                p_name, p_val = param_actions[action]
+                target_wire.model.width_param = p_name
+                target_wire.model.width = p_val
+                target_wire.prepareGeometryChange()
+                target_wire.update()
+                self.status_message.emit(f"Cable asignado al parámetro '{p_name}' ({p_val} bits).")
+            elif action == act_width:
                 val, ok = QInputDialog.getInt(
                     None, "Ancho de Bus",
                     "Número de bits (1 = cable simple, >1 = bus con /N):",
@@ -876,6 +906,7 @@ class RTLGraphicsScene(QGraphicsScene):
                 )
                 if ok:
                     self.push_undo_state()
+                    target_wire.model.width_param = None
                     target_wire.model.width = val
                     target_wire._sync_label_item()
                     target_wire.prepareGeometryChange()

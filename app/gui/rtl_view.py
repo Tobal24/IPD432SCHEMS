@@ -935,6 +935,7 @@ class RTLEditorWidget(QWidget):
         btn_apply_wire = QPushButton("Aplicar al Cable Seleccionado")
         btn_apply_wire.clicked.connect(self.apply_wire_props)
 
+        p_form.addRow("Parámetro:", self.combo_wire_param)
         p_form.addRow("Ancho de bus (bits):", self.spin_wire_width)
         p_form.addRow("Etiqueta:", self.edit_wire_label)
         p_form.addRow(self.check_wire_arrow)
@@ -961,6 +962,8 @@ class RTLEditorWidget(QWidget):
         btn_paste.setToolTip("Pegar elementos del portapapeles con desplazamiento (Ctrl+V)")
 
         btn_solder = QPushButton("⚫ Colocar Solder Dot (Junction)")
+        btn_params = QPushButton("📐 Administrar Parámetros")
+        btn_params.setToolTip("Definir o editar parámetros globales del esquemático (ej: DATA_WIDTH=8, N=4)")
         btn_del = QPushButton("🗑️ Eliminar Seleccionado (Supr)")
         btn_example = QPushButton("🔄 Cargar Ejemplo: Contador + Sumador")
         btn_clear = QPushButton("⚠️ Limpiar Todo")
@@ -973,6 +976,7 @@ class RTLEditorWidget(QWidget):
         btn_copy.clicked.connect(self.scene.copy_selected)
         btn_paste.clicked.connect(self.scene.paste)
         btn_solder.clicked.connect(self.add_solder_dot)
+        btn_params.clicked.connect(self.open_parameters_dialog)
         btn_del.clicked.connect(self.scene_delete_selected)
         btn_example.clicked.connect(self.load_counter_example)
         btn_clear.clicked.connect(self.clear_canvas)
@@ -981,6 +985,7 @@ class RTLEditorWidget(QWidget):
         act_layout.addWidget(btn_relabel)
         act_layout.addWidget(btn_rotate_op)
         act_layout.addWidget(btn_edit_block)
+        act_layout.addWidget(btn_params)
         act_layout.addWidget(btn_mirror)
         act_layout.addWidget(btn_copy)
         act_layout.addWidget(btn_paste)
@@ -1031,6 +1036,12 @@ class RTLEditorWidget(QWidget):
 
         top_bar.addWidget(lbl_grid)
         top_bar.addWidget(self.combo_grid)
+
+        btn_params_top = QPushButton("📐 Parámetros")
+        btn_params_top.setToolTip("Definir o editar parámetros globales del esquemático (ej: DATA_WIDTH=8, N=4)")
+        btn_params_top.clicked.connect(self.open_parameters_dialog)
+        top_bar.addWidget(btn_params_top)
+
         top_bar.addStretch()
 
         center_layout.addLayout(top_bar)
@@ -1105,14 +1116,37 @@ class RTLEditorWidget(QWidget):
             w_item = item if isinstance(item, RTLWireItem) else getattr(item, "wire_item", None)
             if isinstance(w_item, RTLWireItem):
                 w_item.model.width = val
+                # If manual width no longer matches the parameter, detach parameter
+                if w_item.model.width_param:
+                    p_val = self.scene.schematic.get_parameter_value(w_item.model.width_param, -1)
+                    if p_val != val:
+                        w_item.model.width_param = None
+                        self.combo_wire_param.blockSignals(True)
+                        self.combo_wire_param.setCurrentIndex(0)
+                        self.combo_wire_param.blockSignals(False)
                 w_item.prepareGeometryChange()
                 w_item.update()
 
     def _on_wire_param_changed(self, idx: int):
         p_name = self.combo_wire_param.currentData()
+        sel = self.scene.selectedItems()
+        target_val = self.spin_wire_width.value()
         if p_name:
-            val = self.scene.schematic.get_parameter_value(p_name, self.spin_wire_width.value())
-            self.spin_wire_width.setValue(val)
+            target_val = self.scene.schematic.get_parameter_value(p_name, target_val)
+            self.spin_wire_width.blockSignals(True)
+            self.spin_wire_width.setValue(target_val)
+            self.spin_wire_width.blockSignals(False)
+
+        for item in sel:
+            w_item = item if isinstance(item, RTLWireItem) else getattr(item, "wire_item", None)
+            if isinstance(w_item, RTLWireItem):
+                if p_name:
+                    w_item.model.width_param = p_name
+                    w_item.model.width = target_val
+                else:
+                    w_item.model.width_param = None
+                w_item.prepareGeometryChange()
+                w_item.update()
 
     def apply_wire_props(self):
         sel = self.scene.selectedItems()
@@ -1140,18 +1174,21 @@ class RTLEditorWidget(QWidget):
             QMessageBox.information(self, "Aviso", "Seleccione un cable primero en el canvas.")
 
     def open_parameters_dialog(self):
-        dlg = ParametersDialog(self.scene.schematic, self)
         self.scene.push_undo_state()
-        if dlg.exec():
-            self.scene.schematic.sync_parameter_widths()
-            self._update_param_combos()
-            for w in self.scene.wire_items.values():
-                w.prepareGeometryChange()
-                w.update()
-            for c in self.scene.comp_items.values():
-                c.rebuild_pins()
-                c.update()
-            self.lbl_status.setText(f"Parámetros del esquemático actualizados ({len(self.scene.schematic.parameters)} definidos).")
+        dlg = ParametersDialog(self.scene.schematic, self)
+        dlg.exec()
+        self.scene.schematic.sync_parameter_widths()
+        self._update_param_combos()
+        self._on_selection_changed()
+        for w in self.scene.wire_items.values():
+            w._sync_label_item()
+            w.prepareGeometryChange()
+            w.update()
+        for c in self.scene.comp_items.values():
+            c.rebuild_pins()
+            c.prepareGeometryChange()
+            c.update()
+        self.lbl_status.setText(f"Parámetros del esquemático actualizados ({len(self.scene.schematic.parameters)} definidos).")
 
     def edit_selected_component(self):
         sel = self.scene.selectedItems()

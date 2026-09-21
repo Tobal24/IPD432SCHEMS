@@ -1108,6 +1108,107 @@ class TestGUIIntegration(unittest.TestCase):
 
         scene.set_grid_size(20.0)
 
+    def test_parameters_dialog_and_buttons(self):
+        """Verifies that the parameter management button exists and parameters can be added and synchronized."""
+        editor = self.win.tab_rtl
+        self.assertTrue(hasattr(editor, "open_parameters_dialog"))
+        schematic = editor.scene.schematic
+        schematic.set_parameter("DATA_WIDTH", 16)
+        self.assertEqual(schematic.get_parameter_value("DATA_WIDTH"), 16)
+        editor._update_param_combos()
+        combo_texts = [editor.combo_wire_param.itemText(i) for i in range(editor.combo_wire_param.count())]
+        self.assertTrue(any("DATA_WIDTH" in t and "16" in t for t in combo_texts))
+
+    def test_apply_parameter_to_wire(self):
+        """Verify binding parameters to wire width, real-time UI synchronization, and auto-detaching on manual change."""
+        editor = self.win.tab_rtl
+        editor.load_counter_example()
+        scene = editor.scene
+        schematic = scene.schematic
+
+        # 1. Define global parameters
+        schematic.set_parameter("DATA_WIDTH", 16)
+        schematic.set_parameter("ADDR_WIDTH", 32)
+        editor._update_param_combos()
+
+        # Check that combo_wire_param is contained in the properties layout
+        p_form = editor.combo_wire_param.parentWidget().layout()
+        found_in_form = False
+        for i in range(p_form.rowCount()):
+            item = p_form.itemAt(i, p_form.ItemRole.FieldRole)
+            if item and item.widget() == editor.combo_wire_param:
+                found_in_form = True
+                break
+        self.assertTrue(found_in_form, "combo_wire_param must be present in properties form layout")
+
+        # 2. Select wire 'w_const'
+        w_item = scene.wire_items["w_const"]
+        scene.clearSelection()
+        w_item.setSelected(True)
+        editor._on_selection_changed()
+
+        # 3. Apply DATA_WIDTH via combo
+        idx_data = editor.combo_wire_param.findData("DATA_WIDTH")
+        self.assertGreater(idx_data, 0)
+        editor.combo_wire_param.setCurrentIndex(idx_data)
+
+        self.assertEqual(w_item.model.width_param, "DATA_WIDTH")
+        self.assertEqual(w_item.model.width, 16)
+        self.assertEqual(editor.spin_wire_width.value(), 16)
+        slash_text = w_item.model.width_param if w_item.model.width_param else str(w_item.model.width)
+        self.assertEqual(slash_text, "DATA_WIDTH")
+
+        # 4. Switch to ADDR_WIDTH and apply using apply_wire_props button
+        idx_addr = editor.combo_wire_param.findData("ADDR_WIDTH")
+        self.assertGreater(idx_addr, 0)
+        editor.combo_wire_param.setCurrentIndex(idx_addr)
+        editor.apply_wire_props()
+
+        self.assertEqual(w_item.model.width_param, "ADDR_WIDTH")
+        self.assertEqual(w_item.model.width, 32)
+        self.assertEqual(editor.spin_wire_width.value(), 32)
+
+        # 5. Global parameter modification updates wire width
+        schematic.set_parameter("ADDR_WIDTH", 64)
+        schematic.sync_parameter_widths()
+        self.assertEqual(w_item.model.width, 64)
+
+        # 6. Changing spinbox manually detaches parameter if value differs
+        editor.spin_wire_width.setValue(12)
+        self.assertEqual(w_item.model.width, 12)
+        self.assertIsNone(w_item.model.width_param)
+        self.assertIsNone(editor.combo_wire_param.currentData())
+
+        # 7. Setting combo back to None detaches parameter explicitly
+        editor.combo_wire_param.setCurrentIndex(idx_data)
+        self.assertEqual(w_item.model.width_param, "DATA_WIDTH")
+        editor.combo_wire_param.setCurrentIndex(0) # (Ninguno - Manual)
+        self.assertIsNone(w_item.model.width_param)
+
+    def test_wire_pin_parameter_inheritance(self):
+        """Verify that newly connected wires inherit width_param and parameter width from connected pins."""
+        editor = self.win.tab_rtl
+        scene = editor.scene
+        schematic = scene.schematic
+        schematic.set_parameter("BUS_W", 24)
+
+        # Create two ports, one with width_param="BUS_W"
+        p_in = ComponentFactory.create_input_port(100, 100, name="data_in", width=24)
+        p_in.pins[0].width_param = "BUS_W"
+        p_out = ComponentFactory.create_output_port(300, 100, name="data_out", width=1)
+
+        item_in = scene.add_component(p_in)
+        item_out = scene.add_component(p_out)
+
+        pin1 = item_in.pin_items[0]
+        pin2 = item_out.pin_items[0]
+
+        scene.start_wiring(pin1)
+        scene.finish_wiring(pin2)
+        new_wire = schematic.wires[-1]
+        self.assertEqual(new_wire.width_param, "BUS_W")
+        self.assertEqual(new_wire.width, 24)
+
 
 if __name__ == "__main__":
     unittest.main()
