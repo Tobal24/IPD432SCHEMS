@@ -10,6 +10,7 @@ Implements:
 - Generic functional blocks
 - Manhattan orthogonal wires with bus slash /N and solder-dot junctions
 """
+from __future__ import annotations
 
 import math
 from typing import List, Optional, Tuple

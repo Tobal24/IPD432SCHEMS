@@ -7,6 +7,7 @@ Strictly follows guidelines:
 - Support for synchronous / asynchronous resets (high or low active).
 - Timed transitions with automatic timer counter logic.
 """
+from __future__ import annotations
 
 import math
 from app.core.fsm_model import FSM, FSMType, ResetType, FSMEncoding

@@ -7,6 +7,7 @@ Features:
 - Solder-dot junctions on wire crossings
 - Zoom & pan navigation
 """
+from __future__ import annotations
 
 import math
 import uuid

@@ -3,6 +3,7 @@ RTL Schematic Data Model for ELO212 Digital Systems Lab.
 Defines components (MUX, FF/Registers, Gates, Circles, Blocks, Bus Splitters, Constants),
 orthogonal wires, bit-width annotations, and solder-dot junctions.
 """
+from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum

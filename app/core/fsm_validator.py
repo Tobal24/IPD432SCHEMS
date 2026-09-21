@@ -7,6 +7,7 @@ Enforces IPD432 (USM) design rules:
 4. Reachability and deadlock detection.
 5. Verilog identifier validity.
 """
+from __future__ import annotations
 
 import re
 from dataclasses import dataclass

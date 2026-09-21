@@ -4,6 +4,7 @@ Supports:
 - Vector SVG (*.svg) via QSvgGenerator
 - High-Resolution Raster PNG (*.png) with customizable DPI (ideal for LaTeX/Word reports)
 """
+from __future__ import annotations
 
 from PySide6.QtCore import QRectF, QSize, Qt
 from PySide6.QtGui import QPainter, QImage, QColor

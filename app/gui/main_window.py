@@ -3,6 +3,7 @@ Main Window for the ELO212 & IPD432 Digital Design Suite.
 Integrates RTL Schematic Editor and FSM Designer tabs,
 file persistence, vector/raster export, and academic rules reference.
 """
+from __future__ import annotations
 
 import json
 from PySide6.QtCore import Qt

@@ -3,6 +3,7 @@ RTL Schematic Editor Widget for ELO212.
 Provides component palette, canvas with snap-to-grid, wire property editing,
 and quick example loading.
 """
+from __future__ import annotations
 
 import json
 import math

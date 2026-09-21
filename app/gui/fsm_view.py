@@ -6,6 +6,7 @@ Features:
 - Auto-rendered State Diagram (Moore split circles, Mealy arrow labels, Reset arrow)
 - Real-time SystemVerilog Code Generator (2-always / 3-always block formats)
 """
+from __future__ import annotations
 
 import math
 import re

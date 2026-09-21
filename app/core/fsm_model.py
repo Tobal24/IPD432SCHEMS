@@ -2,6 +2,7 @@
 FSM Data Model for IPD432 Digital Systems Design.
 Defines Moore & Mealy state machines, states, transitions, ports, and encoding.
 """
+from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum

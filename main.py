@@ -3,6 +3,7 @@ Entry point for the ELO212 & IPD432 Digital Design Suite.
 Launch with:
     python main.py
 """
+from __future__ import annotations
 
 import sys
 import os
