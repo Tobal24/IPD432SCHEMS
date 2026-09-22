@@ -217,6 +217,44 @@ class TestGUIIntegration(unittest.TestCase):
         block_item.rebuild_pins()
         self.assertEqual(len(block_item.pin_items), 5)
 
+    def test_generic_block_uniform_input_spacing(self):
+        """Verifies that all block inputs have identical spacing (no alternating 20px / 40px gaps)"""
+        scene = self.win.tab_rtl.scene
+        inputs = ["A", "B", "ctrl", "in_3", "in_4", "in_5", "in_6", "in_7", "in_8", "in_9"]
+        outputs = ["result", "zero"]
+        block = ComponentFactory.create_generic_block(200, 200, name="display chooser", inputs=inputs, outputs=outputs)
+        block_item = scene.add_component(block)
+
+        input_pins = [pi for pi in block_item.pin_items if pi.pin.side == PinSide.LEFT]
+        self.assertEqual(len(input_pins), 10)
+
+        # Pin positions must be strictly grid-aligned
+        for pi in input_pins:
+            self.assertEqual(pi.pos().y() % 20.0, 0.0, f"Pin {pi.pin.name} Y {pi.pos().y()} is not on 20px grid")
+            self.assertGreaterEqual(pi.pos().y(), 40.0, f"Pin {pi.pin.name} Y {pi.pos().y()} collides with header banner")
+
+        # Spacings between adjacent inputs must be strictly identical
+        diffs = [input_pins[i + 1].pos().y() - input_pins[i].pos().y() for i in range(len(input_pins) - 1)]
+        self.assertEqual(len(set(diffs)), 1, f"Inputs have non-uniform spacings: {diffs}")
+        self.assertEqual(diffs[0], 20.0)
+
+        # Output pins must also be grid aligned and uniformly spaced
+        out_pins = [pi for pi in block_item.pin_items if pi.pin.side == PinSide.RIGHT]
+        for pi in out_pins:
+            self.assertEqual(pi.pos().y() % 20.0, 0.0)
+            self.assertGreaterEqual(pi.pos().y(), 40.0)
+        out_diffs = [out_pins[i + 1].pos().y() - out_pins[i].pos().y() for i in range(len(out_pins) - 1)]
+        self.assertEqual(len(set(out_diffs)), 1)
+
+        # Test resizing maintains uniform spacing
+        block_item.set_block_size(140.0, 320.0)
+        input_pins = [pi for pi in block_item.pin_items if pi.pin.side == PinSide.LEFT]
+        for pi in input_pins:
+            self.assertEqual(pi.pos().y() % 20.0, 0.0)
+            self.assertGreaterEqual(pi.pos().y(), 40.0)
+        diffs = [input_pins[i + 1].pos().y() - input_pins[i].pos().y() for i in range(len(input_pins) - 1)]
+        self.assertEqual(len(set(diffs)), 1, f"Inputs after resize have non-uniform spacings: {diffs}")
+
     def test_mux_sel_pin_anchoring_and_rendering(self):
         scene = self.win.tab_rtl.scene
         mux = ComponentFactory.create_mux(200, 200, input_names=["IDLE", "RUN", "DONE"], width=4, sel_side="BOTTOM")

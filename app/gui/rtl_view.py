@@ -21,7 +21,8 @@ from PySide6.QtWidgets import (
 from app.core.rtl_model import (
     RTLSchematic, RTLComponent, RTLWire, RTLPin, ComponentFactory,
     ComponentType, PinSide, PinDirection, parse_slice_width,
-    compute_mux_input_offsets
+    compute_mux_input_offsets, compute_block_pin_positions,
+    compute_block_pin_offsets
 )
 from app.gui.rtl_canvas import RTLGraphicsScene, RTLGraphicsView, compute_manhattan_path
 from app.gui.rtl_items import RTLComponentItem, RTLWireItem, snap, get_grid_size, set_grid_size
@@ -105,6 +106,8 @@ class BlockPropertiesDialog(QDialog):
             elif p.side == PinSide.RIGHT:
                 self._add_output_row(p.name, p.width)
 
+        self._update_min_height()
+
         # Dialog buttons
         btn_box = QHBoxLayout()
         btn_ok = QPushButton("Aplicar Cambios")
@@ -117,6 +120,13 @@ class BlockPropertiesDialog(QDialog):
         btn_box.addWidget(btn_ok)
         layout.addLayout(btn_box)
 
+    def _update_min_height(self):
+        max_pins = max(self.table_in.rowCount(), self.table_out.rowCount())
+        min_h = max(60, int(round((40.0 + max_pins * 20.0) / 20.0) * 20))
+        self.spin_height.setMinimum(min_h)
+        if self.spin_height.value() < min_h:
+            self.spin_height.setValue(min_h)
+
     def _add_input_row(self, name=None, width=1):
         row = self.table_in.rowCount()
         self.table_in.insertRow(row)
@@ -127,6 +137,7 @@ class BlockPropertiesDialog(QDialog):
         spin.setRange(1, 128)
         spin.setValue(w)
         self.table_in.setCellWidget(row, 1, spin)
+        self._update_min_height()
 
     def _del_input_row(self):
         row = self.table_in.currentRow()
@@ -134,6 +145,7 @@ class BlockPropertiesDialog(QDialog):
             self.table_in.removeRow(row)
         elif self.table_in.rowCount() > 0:
             self.table_in.removeRow(self.table_in.rowCount() - 1)
+        self._update_min_height()
 
     def _add_output_row(self, name=None, width=1):
         row = self.table_out.rowCount()
@@ -145,6 +157,7 @@ class BlockPropertiesDialog(QDialog):
         spin.setRange(1, 128)
         spin.setValue(w)
         self.table_out.setCellWidget(row, 1, spin)
+        self._update_min_height()
 
     def _del_output_row(self):
         row = self.table_out.currentRow()
@@ -152,6 +165,7 @@ class BlockPropertiesDialog(QDialog):
             self.table_out.removeRow(row)
         elif self.table_out.rowCount() > 0:
             self.table_out.removeRow(self.table_out.rowCount() - 1)
+        self._update_min_height()
 
     def get_configured_pins(self) -> Tuple[List[Tuple[str, int]], List[Tuple[str, int]]]:
         inputs = []
@@ -1223,8 +1237,9 @@ class RTLEditorWidget(QWidget):
             new_h = float(dlg.spin_height.value())
 
             inputs, outputs = dlg.get_configured_pins()
-            min_h = max(60.0, (max(len(inputs), len(outputs)) + 1) * 25.0)
-            new_h = max(new_h, min_h)
+            max_pins = max(len(inputs), len(outputs))
+            min_h = max(60.0, snap(40.0 + max_pins * 20.0, 20.0))
+            new_h = max(snap(new_h, 20.0), min_h)
 
             comp.width = new_w
             comp.height = new_h
@@ -1232,9 +1247,12 @@ class RTLEditorWidget(QWidget):
             old_pins = {p.name: p.id for p in comp.pins}
             new_pins = []
 
+            in_offsets = compute_block_pin_offsets(len(inputs), new_h, 20.0)
+            out_offsets = compute_block_pin_offsets(len(outputs), new_h, 20.0)
+
             for i, (in_name, in_w) in enumerate(inputs):
                 pid = old_pins.get(in_name, f"{comp.id}_in_{i}")
-                offset = (i + 1) / (len(inputs) + 1)
+                offset = in_offsets[i] if i < len(in_offsets) else (i + 1) / (len(inputs) + 1)
                 new_pins.append(RTLPin(
                     id=pid,
                     name=in_name,
@@ -1246,7 +1264,7 @@ class RTLEditorWidget(QWidget):
 
             for j, (out_name, out_w) in enumerate(outputs):
                 pid = old_pins.get(out_name, f"{comp.id}_out_{j}")
-                offset = (j + 1) / (len(outputs) + 1)
+                offset = out_offsets[j] if j < len(out_offsets) else (j + 1) / (len(outputs) + 1)
                 new_pins.append(RTLPin(
                     id=pid,
                     name=out_name,

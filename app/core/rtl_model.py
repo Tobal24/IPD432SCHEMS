@@ -356,6 +356,54 @@ def compute_mux_input_offsets(num_inputs: int, height: float) -> List[float]:
         return [(i + 1) / (num_inputs + 1) for i in range(num_inputs)]
 
 
+def compute_block_pin_positions(num_pins: int, height: float, grid: float = 20.0) -> List[float]:
+    """
+    Computes strictly grid-aligned vertical positions for block pins.
+    Guarantees:
+    - All positions are integer multiples of grid.
+    - Uniform spacing: every pair of adjacent pins has the exact same distance (step).
+    - Pins are placed below the header banner (y >= 2 * grid).
+    - Pins stay within the block boundaries (y <= height - grid).
+    - Centered vertically in available space when extra height is present.
+    """
+    if num_pins <= 0:
+        return []
+    g = float(grid)
+    h_snapped = max(round(height / g) * g, 3.0 * g)
+    y_min = 2.0 * g  # 40.0 px: strictly below the 26px header banner
+    y_max = max(y_min, h_snapped - g)
+    span = y_max - y_min
+    if num_pins == 1:
+        return [round((y_min + span * 0.5) / g) * g]
+
+    ideal_step = span / (num_pins + 1)
+    k = max(1, round(ideal_step / g))
+    while (num_pins - 1) * k * g > span and k > 1:
+        k -= 1
+    step = k * g
+
+    total_pins_span = (num_pins - 1) * step
+    remaining_space = max(0.0, span - total_pins_span)
+    y_start = round((y_min + remaining_space * 0.5) / g) * g
+
+    if y_start + (num_pins - 1) * step > y_max:
+        y_start = y_max - (num_pins - 1) * step
+    if y_start < y_min:
+        y_start = y_min
+
+    return [y_start + i * step for i in range(num_pins)]
+
+
+def compute_block_pin_offsets(num_pins: int, height: float, grid: float = 20.0) -> List[float]:
+    """
+    Computes normalized offsets (0.0 to 1.0) for block pins based on uniform grid positions.
+    """
+    if num_pins <= 0 or height <= 0:
+        return []
+    positions = compute_block_pin_positions(num_pins, height, grid)
+    return [pos / height for pos in positions]
+
+
 class ComponentFactory:
     @staticmethod
     def create_mux(x: float = 0, y: float = 0, num_inputs: int = 2, width: int = 1,
@@ -605,23 +653,29 @@ class ComponentFactory:
         comp_id = f"blk_{uuid.uuid4().hex[:6]}"
         inputs = inputs or ["A", "B", "ctrl"]
         outputs = outputs or ["result", "zero"]
+        max_pins = max(len(inputs), len(outputs))
+        comp_h = max(80.0, float(round((40.0 + max_pins * 20.0) / 20.0) * 20))
+        in_offsets = compute_block_pin_offsets(len(inputs), comp_h, 20.0)
+        out_offsets = compute_block_pin_offsets(len(outputs), comp_h, 20.0)
         pins = []
         for i, in_name in enumerate(inputs):
+            offset = in_offsets[i] if i < len(in_offsets) else (i + 1) / (len(inputs) + 1)
             pins.append(RTLPin(
                 id=f"{comp_id}_in_{i}",
                 name=in_name,
                 direction=PinDirection.IN,
                 side=PinSide.LEFT,
-                offset=(i + 1) / (len(inputs) + 1),
+                offset=offset,
                 width=1
             ))
         for i, out_name in enumerate(outputs):
+            offset = out_offsets[i] if i < len(out_offsets) else (i + 1) / (len(outputs) + 1)
             pins.append(RTLPin(
                 id=f"{comp_id}_out_{i}",
                 name=out_name,
                 direction=PinDirection.OUT,
                 side=PinSide.RIGHT,
-                offset=(i + 1) / (len(outputs) + 1),
+                offset=offset,
                 width=1
             ))
         return RTLComponent(
@@ -631,7 +685,7 @@ class ComponentFactory:
             x=x,
             y=y,
             width=100.0,
-            height=max(80.0, max(len(inputs), len(outputs)) * 30.0),
+            height=comp_h,
             pins=pins
         )
 

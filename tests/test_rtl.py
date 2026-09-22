@@ -178,6 +178,22 @@ class TestRTLSuite(unittest.TestCase):
         self.assertEqual(restored_out.label, "anodes[7:0]")
         self.assertEqual(restored_out.pins[0].width, 8)
 
+    def test_block_pin_uniform_spacing(self):
+        from app.core.rtl_model import compute_block_pin_positions, compute_block_pin_offsets
+        # Test across various pin counts and heights
+        for n in range(2, 16):
+            for h in (100.0, 140.0, 200.0, 240.0, 280.0, 320.0, 400.0):
+                positions = compute_block_pin_positions(n, h, 20.0)
+                self.assertEqual(len(positions), n)
+                # Check strict grid alignment
+                for p in positions:
+                    self.assertEqual(p % 20.0, 0.0)
+                # Check spacing between all adjacent pins is strictly identical
+                diffs = [positions[i + 1] - positions[i] for i in range(n - 1)]
+                self.assertEqual(len(set(diffs)), 1, f"Non-uniform spacing for n={n}, h={h}: {diffs}")
+                # Check no header collision (header line is at 26px, so pins >= 40px)
+                self.assertGreaterEqual(positions[0], 40.0)
+
 
 if __name__ == "__main__":
     unittest.main()

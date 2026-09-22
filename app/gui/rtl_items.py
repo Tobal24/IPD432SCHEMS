@@ -24,7 +24,8 @@ from PySide6.QtWidgets import (
     QGraphicsTextItem, QGraphicsSceneMouseEvent, QMenu, QInputDialog
 )
 from app.core.rtl_model import (
-    RTLComponent, RTLPin, ComponentType, PinDirection, PinSide, RTLWire
+    RTLComponent, RTLPin, ComponentType, PinDirection, PinSide, RTLWire,
+    compute_block_pin_positions
 )
 
 
@@ -117,6 +118,24 @@ class RTLPinItem(QGraphicsItem):
                 pos = QPointF(raw_pos, 0)
             else: # BOTTOM
                 pos = QPointF(raw_pos, snapped_h)
+        elif ctype == ComponentType.BLOCK:
+            same_side_pins = [p for p in self.parent_comp.model.pins if p.side == side]
+            if side in (PinSide.LEFT, PinSide.RIGHT):
+                if self.pin in same_side_pins:
+                    idx = same_side_pins.index(self.pin)
+                    n = len(same_side_pins)
+                    g = get_grid_size()
+                    pos_list = compute_block_pin_positions(n, h, g)
+                    raw_y = pos_list[idx] if idx < len(pos_list) else snap(h * off, g)
+                else:
+                    raw_y = snap(h * off)
+                if h > 0:
+                    self.pin.offset = raw_y / h
+                pos = QPointF(0 if side == PinSide.LEFT else snapped_w, raw_y)
+            elif side == PinSide.TOP:
+                pos = QPointF(snap(w * off), 0)
+            else: # BOTTOM
+                pos = QPointF(snap(w * off), snapped_h)
         else:
             if side == PinSide.LEFT:
                 pos = QPointF(0, snap(h * off))
@@ -250,8 +269,9 @@ class RTLResizeHandleItem(QGraphicsItem):
             target_w = max(60.0, snap(val.x() + self.SIZE / 2))
             in_pins = len([p for p in self.comp_item.model.pins if p.side == PinSide.LEFT])
             out_pins = len([p for p in self.comp_item.model.pins if p.side == PinSide.RIGHT])
-            min_h = max(60.0, (max(in_pins, out_pins) + 1) * 25.0)
-            target_h = max(min_h, snap(val.y() + self.SIZE / 2))
+            max_pins = max(in_pins, out_pins)
+            min_h = max(60.0, snap(40.0 + max_pins * 20.0, 20.0))
+            target_h = max(min_h, snap(val.y() + self.SIZE / 2, 20.0))
 
             self._is_updating = True
             try:
