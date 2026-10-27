@@ -1248,8 +1248,239 @@ class TestGUIIntegration(unittest.TestCase):
         self.assertEqual(new_wire.width, 24)
 
 
+    def test_no_white_pin_circles_on_export_and_default(self):
+        """Verify white pin circles are hidden by default and never appear in SVG/PNG exports so they do not look like negation bubbles."""
+        import tempfile
+        from app.gui.export_dialog import DiagramExporter
+
+        editor = self.win.tab_rtl
+        scene = editor.scene
+
+        # By default, show_pin_circles is False
+        self.assertFalse(scene.show_pin_circles)
+        self.assertFalse(editor.check_show_pins.isChecked())
+
+        # Create a schematic with only rectangular blocks/registers (no circular operators or NOT gates)
+        scene.clear()
+        scene.comp_items.clear()
+        scene.wire_items.clear()
+        scene.junction_items.clear()
+        blk = ComponentFactory.create_generic_block(100, 100, name="ALU", inputs=["A", "B"], outputs=["Y"])
+        blk_item = scene.add_component(blk)
+
+        # Even if user turns on show_pin_circles in the editor and hovers a pin, export must suppress pin circles
+        editor.check_show_pins.setChecked(True)
+        self.assertTrue(scene.show_pin_circles)
+        blk_item.pin_items[0].is_hovered = True
+        blk_item.setSelected(True)
+
+        with tempfile.NamedTemporaryFile(suffix=".svg", delete=False) as tf_svg, \
+             tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tf_png:
+            svg_path = tf_svg.name
+            png_path = tf_png.name
+
+        try:
+            ok_svg = DiagramExporter.export_svg_to_file(scene, svg_path)
+            ok_png = DiagramExporter.export_png_to_file(scene, png_path)
+            self.assertTrue(ok_svg)
+            self.assertTrue(ok_png)
+
+            with open(svg_path, "r", encoding="utf-8") as f:
+                svg_content = f.read()
+
+            # No <circle or <ellipse elements should exist for module pins on a rectangular block
+            self.assertNotIn("<circle", svg_content)
+            self.assertNotIn("<ellipse", svg_content)
+            # Module name and pin labels must still be rendered
+            self.assertIn("ALU", svg_content)
+            self.assertIn(">A<", svg_content)
+            self.assertIn(">B<", svg_content)
+            self.assertIn(">Y<", svg_content)
+
+            # Selection state is restored after export
+            self.assertTrue(blk_item.isSelected())
+            self.assertFalse(scene.is_exporting)
+        finally:
+            for p in (svg_path, png_path):
+                if os.path.exists(p):
+                    os.remove(p)
+
+    def test_mux_uniform_input_spacing_all_counts(self):
+        """Verifies that all MUX inputs have strictly uniform vertical spacing (no 20px/40px alternating gaps)."""
+        scene = self.win.tab_rtl.scene
+        scene.set_grid_size(20.0)
+
+        # 1. Exact 5-state FSM MUX case (PB_IDLE, PB_COUNT, PB_PRESSED, PB_STABLE, PB_RELEASED)
+        pb_states = ["PB_IDLE", "PB_COUNT", "PB_PRESSED", "PB_STABLE", "PB_RELEASED"]
+        mux5 = ComponentFactory.create_mux(200, 200, input_names=pb_states, width=3, sel_side="TOP")
+        mux5_item = scene.add_component(mux5)
+
+        in_pins_5 = [pi for pi in mux5_item.pin_items if pi.pin.direction == PinDirection.IN]
+        self.assertEqual(len(in_pins_5), 5)
+        diffs_5 = [in_pins_5[i + 1].pos().y() - in_pins_5[i].pos().y() for i in range(len(in_pins_5) - 1)]
+        self.assertEqual(len(set(diffs_5)), 1, f"5-input MUX has non-uniform spacings: {diffs_5}")
+        self.assertEqual(diffs_5[0], 20.0)
+        # Top and bottom margins must be symmetric and clear of sloped edges (y >= 40, y <= h - 40)
+        self.assertEqual(in_pins_5[0].pos().y(), 40.0)
+        self.assertEqual(mux5.height - in_pins_5[-1].pos().y(), 40.0)
+
+        # 2. Test across all input counts from 2 to 12
+        for n in range(2, 13):
+            m = ComponentFactory.create_mux(100, 100, num_inputs=n)
+            m_item = scene.add_component(m)
+            in_pins = [pi for pi in m_item.pin_items if pi.pin.direction == PinDirection.IN]
+            self.assertEqual(len(in_pins), n)
+            diffs = [in_pins[i + 1].pos().y() - in_pins[i].pos().y() for i in range(n - 1)]
+            self.assertEqual(len(set(diffs)), 1, f"{n}-input MUX has non-uniform spacings: {diffs}")
+            for pi in in_pins:
+                self.assertEqual(pi.pos().y() % 20.0, 0.0)
+
+    def test_fsm_transition_endpoint_dragging_along_circumference(self):
+        """Verifies that FSM transition start and end points can be dragged along the state circumference, serialized, and reset."""
+        import math
+        from app.core.fsm_model import FSM
+
+        fsm_tab = self.win.tab_fsm
+        fsm_tab.load_pulse_preset()
+        scene = fsm_tab.fsm_scene
+
+        # Pick an inter-state transition (e.g. S0 -> S1)
+        t_item = next(ti for ti in scene.trans_items if ti.transition.source != ti.transition.target)
+        src_item = t_item.src_item
+        dst_item = t_item.dst_item
+
+        # Initially start_angle and end_angle are None (automatic)
+        self.assertIsNone(t_item.transition.start_angle)
+        self.assertIsNone(t_item.transition.end_angle)
+
+        # Drag start_handle toward top-right of src_item (-45 degrees = -pi/4)
+        src_center = src_item.pos()
+        target_start = QPointF(src_center.x() + 100.0, src_center.y() - 100.0)
+        t_item.start_handle.setPos(target_start)
+
+        # Verify start_handle snapped strictly to the circumference of src_item at angle -pi/4
+        self.assertIsNotNone(t_item.transition.start_angle)
+        self.assertAlmostEqual(t_item.transition.start_angle, -math.pi / 4, places=5)
+        dist_start = math.hypot(
+            t_item.start_handle.pos().x() - src_center.x(),
+            t_item.start_handle.pos().y() - src_center.y()
+        )
+        self.assertAlmostEqual(dist_start, src_item.radius, places=4)
+        self.assertAlmostEqual(t_item.start_pt.x(), t_item.start_handle.pos().x(), places=4)
+        self.assertAlmostEqual(t_item.start_pt.y(), t_item.start_handle.pos().y(), places=4)
+
+        # Drag end_handle toward bottom-left of dst_item (+135 degrees = 3*pi/4)
+        dst_center = dst_item.pos()
+        target_end = QPointF(dst_center.x() - 120.0, dst_center.y() + 120.0)
+        t_item.end_handle.setPos(target_end)
+
+        self.assertIsNotNone(t_item.transition.end_angle)
+        self.assertAlmostEqual(t_item.transition.end_angle, 3 * math.pi / 4, places=5)
+        dist_end = math.hypot(
+            t_item.end_handle.pos().x() - dst_center.x(),
+            t_item.end_handle.pos().y() - dst_center.y()
+        )
+        self.assertAlmostEqual(dist_end, dst_item.radius, places=4)
+        self.assertAlmostEqual(t_item.end_pt.x(), t_item.end_handle.pos().x(), places=4)
+        self.assertAlmostEqual(t_item.end_pt.y(), t_item.end_handle.pos().y(), places=4)
+
+        # Moving src_item preserves the custom angle on the new circumference
+        src_item.setPos(src_center.x() + 40.0, src_center.y() + 20.0)
+        new_src_center = src_item.pos()
+        expected_sx = new_src_center.x() + src_item.radius * math.cos(-math.pi / 4)
+        expected_sy = new_src_center.y() + src_item.radius * math.sin(-math.pi / 4)
+        self.assertAlmostEqual(t_item.start_pt.x(), expected_sx, places=4)
+        self.assertAlmostEqual(t_item.start_pt.y(), expected_sy, places=4)
+
+        # Verify serialization round-trip preserves start_angle and end_angle
+        fsm_dict = scene.fsm.to_dict()
+        restored_fsm = FSM.from_dict(fsm_dict)
+        restored_t = next(
+            tr for tr in restored_fsm.transitions
+            if tr.source == t_item.transition.source and tr.target == t_item.transition.target
+        )
+        self.assertAlmostEqual(restored_t.start_angle, -math.pi / 4, places=5)
+        self.assertAlmostEqual(restored_t.end_angle, 3 * math.pi / 4, places=5)
+
+        # Reset endpoints and verify automatic angles are restored
+        t_item.reset_endpoints()
+        self.assertIsNone(t_item.transition.start_angle)
+        self.assertIsNone(t_item.transition.end_angle)
+
+    def test_fsm_state_name_two_line_wrapping_and_compact_radius(self):
+        """Verifies that long state names split into 2 lines and do not produce giant state circles."""
+        from app.gui.fsm_view import FSMStateCircleItem
+        fsm_tab = self.win.tab_fsm
+        fsm_tab.load_mealy_preset()
+        scene = fsm_tab.fsm_scene
+
+        # Short name stays 1 line
+        self.assertEqual(FSMStateCircleItem.wrap_state_name("S0"), ["S0"])
+        # Underscore-separated name splits into 2 balanced lines
+        lines_pb = FSMStateCircleItem.wrap_state_name("PB_PRESSED")
+        self.assertEqual(len(lines_pb), 2)
+        self.assertEqual(lines_pb, ["PB_", "PRESSED"])
+
+        # Long continuous name splits into 2 balanced halves
+        lines_cfg = FSMStateCircleItem.wrap_state_name("CONFIGURACION")
+        self.assertEqual(len(lines_cfg), 2)
+        self.assertEqual("".join(lines_cfg), "CONFIGURACION")
+
+        # Rename Mealy state to a long name and verify radius remains compact (42.0 instead of 70+)
+        fsm_tab.fsm.states[0].name = "ESTADO_INICIAL"
+        for t in fsm_tab.fsm.transitions:
+            if t.source == "S0":
+                t.source = "ESTADO_INICIAL"
+            if t.target == "S0":
+                t.target = "ESTADO_INICIAL"
+        scene.rebuild_scene()
+
+        s_item = scene.state_items["ESTADO_INICIAL"]
+        self.assertEqual(s_item.radius, FSMStateCircleItem.BASE_RADIUS)
+
+    def test_fsm_mealy_transition_font_and_export_with_io_legend(self):
+        """Verifies larger Mealy transition font, two-line transition formatting, and I/O legend in SVG/PNG export."""
+        import tempfile
+        from app.gui.fsm_view import FSMTransitionBadgeItem
+        from app.gui.export_dialog import DiagramExporter
+
+        fsm_tab = self.win.tab_fsm
+        fsm_tab.load_mealy_preset()
+        scene = fsm_tab.fsm_scene
+
+        # Transition badge font size is 11pt (larger & legible)
+        self.assertGreaterEqual(FSMTransitionBadgeItem.FONT_SIZE, 11)
+
+        # Long Mealy transition wraps at '/' into 2 lines
+        long_trans = next(ti for ti in scene.trans_items if "din == 1'b1" in ti.display_text)
+        self.assertIn("\n", long_trans.display_text)
+
+        # Legend item exists in scene with declared inputs and outputs
+        self.assertIsNotNone(scene.legend_item)
+
+        with tempfile.NamedTemporaryFile(suffix=".svg", delete=False) as tf_svg, \
+             tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tf_png:
+            svg_path = tf_svg.name
+            png_path = tf_png.name
+
+        try:
+            self.assertTrue(DiagramExporter.export_svg_to_file(scene, svg_path))
+            self.assertTrue(DiagramExporter.export_png_to_file(scene, png_path))
+
+            with open(svg_path, "r", encoding="utf-8") as f:
+                svg_content = f.read()
+
+            # Verify SVG contains the legend header and all declared inputs and outputs
+            self.assertIn("Leyenda", svg_content)
+            self.assertIn("Entradas:", svg_content)
+            self.assertIn("Salidas:", svg_content)
+            self.assertIn("din", svg_content)
+            self.assertIn("pattern_found", svg_content)
+        finally:
+            for p in (svg_path, png_path):
+                if os.path.exists(p):
+                    os.remove(p)
+
+
 if __name__ == "__main__":
     unittest.main()
-
-
-

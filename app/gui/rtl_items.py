@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (
 )
 from app.core.rtl_model import (
     RTLComponent, RTLPin, ComponentType, PinDirection, PinSide, RTLWire,
-    compute_block_pin_positions
+    compute_block_pin_positions, compute_mux_input_positions
 )
 
 
@@ -68,8 +68,22 @@ class RTLPinItem(QGraphicsItem):
         snapped_h = snap(h)
 
         if ctype == ComponentType.MUX:
-            # Enforce strict grid alignment for all MUX pins
-            if not is_mirrored:
+            # Enforce strict grid alignment and uniform spacing for all MUX pins
+            in_side = PinSide.RIGHT if is_mirrored else PinSide.LEFT
+            if side == in_side and self.pin.direction == PinDirection.IN:
+                in_pins = [p for p in self.parent_comp.model.pins if p.side == in_side and p.direction == PinDirection.IN]
+                if self.pin in in_pins:
+                    idx = in_pins.index(self.pin)
+                    n = len(in_pins)
+                    g = get_grid_size()
+                    pos_list = compute_mux_input_positions(n, h, g)
+                    raw_y = pos_list[idx] if idx < len(pos_list) else snap(h * off, g)
+                else:
+                    raw_y = snap(h * off)
+                if h > 0:
+                    self.pin.offset = raw_y / h
+                pos = QPointF(snapped_w if is_mirrored else 0, raw_y)
+            elif not is_mirrored:
                 if side == PinSide.LEFT:
                     pos = QPointF(0, snap(h * off))
                 elif side == PinSide.RIGHT:
@@ -159,21 +173,28 @@ class RTLPinItem(QGraphicsItem):
     def paint(self, painter: QPainter, option, widget=None):
         painter.setRenderHint(QPainter.Antialiasing)
         ctype = self.parent_comp.model.type
+        scene = self.scene()
+        is_exporting = bool(getattr(scene, "is_exporting", False)) if scene else (widget is None)
+
         if ctype in (ComponentType.INPUT_PORT, ComponentType.OUTPUT_PORT):
             # Suppress default pin circle and redundant pin text; only show hover anchor
-            if self.is_hovered:
+            if self.is_hovered and not is_exporting:
                 painter.setBrush(QBrush(QColor(255, 120, 0)))
                 painter.setPen(QPen(QColor(200, 50, 0), 1.5))
                 painter.drawEllipse(QPointF(0, 0), self.RADIUS, self.RADIUS)
             return
 
-        if self.is_hovered:
-            painter.setBrush(QBrush(QColor(255, 120, 0)))
-            painter.setPen(QPen(QColor(200, 50, 0), 1.5))
-        else:
-            painter.setBrush(QBrush(QColor(255, 255, 255)))
-            painter.setPen(QPen(QColor(40, 40, 40), 1.5))
-        painter.drawEllipse(QPointF(0, 0), self.RADIUS, self.RADIUS)
+        if not is_exporting:
+            show_pins = bool(getattr(scene, "show_pin_circles", False)) if scene else False
+            wiring_active = bool(getattr(scene, "wiring_active", False)) if scene else False
+            if self.is_hovered:
+                painter.setBrush(QBrush(QColor(255, 120, 0)))
+                painter.setPen(QPen(QColor(200, 50, 0), 1.5))
+                painter.drawEllipse(QPointF(0, 0), self.RADIUS, self.RADIUS)
+            elif show_pins or wiring_active:
+                painter.setBrush(QBrush(QColor(255, 255, 255)))
+                painter.setPen(QPen(QColor(40, 40, 40), 1.5))
+                painter.drawEllipse(QPointF(0, 0), self.RADIUS, self.RADIUS)
 
         # Suppress redundant output labels that cause visual clutter / collision
         if ctype == ComponentType.OPERATOR_CIRCLE and self.pin.direction == PinDirection.OUT:
@@ -1188,7 +1209,10 @@ class RTLWireItem(QGraphicsItem):
         vx, vy = -uy, ux
         arrow_len = 8.0
         arrow_w = 4.5
-        offset = 4.0 if self.model.target_pin_id else 0.0
+        scene = self.scene()
+        is_exporting = bool(getattr(scene, "is_exporting", False)) if scene else False
+        show_pins = bool(getattr(scene, "show_pin_circles", False)) if (scene and not is_exporting) else False
+        offset = 4.0 if (self.model.target_pin_id and show_pins) else 0.0
         tip = QPointF(p_last.x() - offset * ux, p_last.y() - offset * uy)
         left = QPointF(tip.x() - arrow_len * ux + arrow_w * vx, tip.y() - arrow_len * uy + arrow_w * vy)
         right = QPointF(tip.x() - arrow_len * ux - arrow_w * vx, tip.y() - arrow_len * uy - arrow_w * vy)

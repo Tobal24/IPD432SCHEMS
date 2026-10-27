@@ -284,6 +284,18 @@ class RTLGraphicsScene(QGraphicsScene):
         self.wire_start_pin: Optional[RTLPinItem] = None
         self.temp_wire_points: List[Tuple[float, float]] = []
         self.temp_wire_pos: Optional[QPointF] = None
+        self.is_exporting: bool = False
+        self.show_pin_circles: bool = False
+
+    def set_show_pin_circles(self, show: bool):
+        self.show_pin_circles = bool(show)
+        for comp_item in self.comp_items.values():
+            for pi in comp_item.pin_items:
+                pi.update()
+        for w_item in self.wire_items.values():
+            w_item.prepareGeometryChange()
+            w_item.update()
+        self.update()
 
     def set_grid_size(self, size: float):
         if size not in (5.0, 10.0, 20.0):
@@ -696,6 +708,7 @@ class RTLGraphicsScene(QGraphicsScene):
         self.wiring_active = True
         self.wire_start_pin = pin_item
         start_pt = pin_item.scenePos()
+        self.update()
         self.status_message.emit(f"Cableando desde pin '{pin_item.pin.name}'. Haga clic en el pin de destino.")
 
     def finish_wiring(self, end_pin_item: RTLPinItem):

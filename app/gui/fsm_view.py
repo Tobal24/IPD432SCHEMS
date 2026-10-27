@@ -3,17 +3,18 @@ FSM Designer & Visualizer for IPD432.
 Features:
 - Tabular / Option-based description of States, I/O ports, and Transitions
 - Formal Rule Validator (Latches, Unreachable, Non-complimentary checks)
-- Auto-rendered State Diagram (Moore split circles, Mealy arrow labels, Reset arrow)
+- Auto-rendered State Diagram (Moore split circles, Mealy arrow labels, Reset arrow, I/O Legend)
 - Real-time SystemVerilog Code Generator (2-always / 3-always block formats)
 """
 from __future__ import annotations
 
 import math
 import re
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 from PySide6.QtCore import Qt, QRectF, QPointF, QLineF, Signal
 from PySide6.QtGui import (
-    QPainter, QPen, QBrush, QColor, QFont, QFontMetrics, QPainterPath, QPolygonF
+    QPainter, QPen, QBrush, QColor, QFont, QFontMetrics, QPainterPath, QPolygonF,
+    QPainterPathStroker
 )
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QGroupBox,
@@ -21,7 +22,7 @@ from PySide6.QtWidgets import (
     QTableWidgetItem, QHeaderView, QLabel, QTextEdit, QListWidget,
     QListWidgetItem, QGraphicsView, QGraphicsScene, QGraphicsItem,
     QGraphicsPathItem, QGraphicsTextItem, QMessageBox, QFileDialog,
-    QCheckBox, QTabWidget, QDialog
+    QCheckBox, QTabWidget, QDialog, QMenu
 )
 
 from app.core.fsm_model import (
@@ -107,8 +108,9 @@ class FSMStateCircleItem(QGraphicsItem):
     State circle complying strictly with IPD432 conventions:
     - Moore: circle divided by horizontal line (Top: State Name, Bottom: Output values)
     - Mealy: circle with State Name (outputs on transitions)
+    - Long state names are automatically split into two balanced lines so circles stay compact
     - Draggable for clean report layouts
-    - Dynamic radius: auto-scales when a state has > 2 outputs so they never run out of space
+    - Dynamic radius: auto-scales when a Moore state has > 2 outputs so they never run out of space
     """
     BASE_RADIUS = 42.0
     RADIUS = 42.0  # Backwards compatibility
@@ -125,22 +127,70 @@ class FSMStateCircleItem(QGraphicsItem):
         self.setPos(state.x, state.y)
         self.setZValue(2)
 
+    @staticmethod
+    def wrap_state_name(name: str, max_chars: int = 8) -> List[str]:
+        """Splits long state names into up to two balanced lines to fit cleanly inside state circles."""
+        name = name.strip()
+        if not name:
+            return [""]
+        if len(name) <= max_chars:
+            return [name]
+
+        # 1. Try splitting at '_', '-', or whitespace closest to the midpoint
+        best_split: Optional[Tuple[str, str]] = None
+        best_diff = float("inf")
+        for m in re.finditer(r"[_\-\s]+", name):
+            sep = m.group(0)
+            split_idx = m.end() if ("_" in sep or "-" in sep) else m.start()
+            left = name[:split_idx].strip()
+            right = name[m.end():].strip()
+            if left and right:
+                diff = abs(len(left) - len(right))
+                if diff < best_diff:
+                    best_diff = diff
+                    best_split = (left, right)
+
+        if best_split:
+            left, right = best_split
+            if max(len(left), len(right)) <= max(max_chars + 3, int(len(name) * 0.72)):
+                return [left, right]
+
+        # 2. Try CamelCase boundary (e.g. EstadoInicial -> Estado / Inicial)
+        for m in re.finditer(r"(?<=[a-z0-9])(?=[A-Z])", name):
+            idx = m.start()
+            left, right = name[:idx], name[idx:]
+            if left and right:
+                diff = abs(len(left) - len(right))
+                if diff < best_diff:
+                    best_diff = diff
+                    best_split = (left, right)
+
+        if best_split:
+            left, right = best_split
+            if max(len(left), len(right)) <= max(max_chars + 3, int(len(name) * 0.72)):
+                return [left, right]
+
+        # 3. Fallback: split evenly into two lines at midpoint
+        half = (len(name) + 1) // 2
+        return [name[:half], name[half:]]
+
     @property
     def radius(self) -> float:
+        name_lines = self.wrap_state_name(self.state.name)
+        max_name_len = max((len(line) for line in name_lines), default=0)
+        r_name = self.BASE_RADIUS if max_name_len <= 9 else min(54.0, self.BASE_RADIUS + (max_name_len - 9) * 2.5)
+
         if self.fsm.fsm_type == FSMType.MOORE and self.state.moore_outputs:
             num_outs = len(self.state.moore_outputs)
             max_len = max((len(f"{k} = {v}") for k, v in self.state.moore_outputs.items()), default=0)
             if num_outs <= 2 and max_len <= 12:
-                return self.BASE_RADIUS
+                return max(self.BASE_RADIUS, r_name)
             # Vertical space in lower hemisphere (Consolas font ~13-14px per line)
             r_h = 16.0 + num_outs * 13.0
             # Horizontal space (chord width near bottom line)
             r_w = (max_len * 6.0 + 10.0) / 1.4
-            return max(self.BASE_RADIUS, r_h, r_w)
-        elif self.fsm.fsm_type == FSMType.MEALY:
-            name_len = len(self.state.name)
-            return max(self.BASE_RADIUS, name_len * 5.0)
-        return self.BASE_RADIUS
+            return max(self.BASE_RADIUS, r_name, r_h, r_w)
+        return max(self.BASE_RADIUS, r_name)
 
     def shape(self) -> QPainterPath:
         path = QPainterPath()
@@ -180,6 +230,17 @@ class FSMStateCircleItem(QGraphicsItem):
                 return
         super().mouseDoubleClickEvent(event)
 
+    @staticmethod
+    def _fit_font_size(lines: List[str], max_width: float, start_size: int, min_size: int = 7) -> int:
+        fsize = start_size
+        while fsize > min_size:
+            fm = QFontMetrics(QFont("Segoe UI", fsize, QFont.Bold))
+            w = max((fm.horizontalAdvance(line) for line in lines), default=0)
+            if w <= max_width:
+                break
+            fsize -= 1
+        return fsize
+
     def paint(self, painter: QPainter, option, widget=None):
         painter.setRenderHint(QPainter.Antialiasing)
         r = self.radius
@@ -191,14 +252,20 @@ class FSMStateCircleItem(QGraphicsItem):
         painter.setBrush(QBrush(QColor(250, 250, 252)))
         painter.drawEllipse(rect)
 
+        name_lines = self.wrap_state_name(self.state.name)
+        wrapped_name = "\n".join(name_lines)
+
         if self.fsm.fsm_type == FSMType.MOORE:
             # Divided circle (IPD432 slide 11 & 24)
             painter.drawLine(QLineF(-r, 0, r, 0))
 
-            # Top: State ID
-            top_fsize = 10 if r <= 50 else (11 if r <= 65 else 12)
+            # Top: State ID (1 or 2 lines inside upper hemisphere)
+            base_top_fsize = (10 if r <= 50 else 11) if len(name_lines) == 1 else (9 if r <= 50 else 10)
+            avail_top_w = 2 * r * (0.76 if len(name_lines) == 1 else 0.70)
+            top_fsize = self._fit_font_size(name_lines, avail_top_w, base_top_fsize, min_size=7)
             painter.setFont(QFont("Segoe UI", top_fsize, QFont.Bold))
-            painter.drawText(QRectF(-r, -r, 2 * r, r), Qt.AlignCenter, self.state.name)
+            top_rect = QRectF(-r + 4, -r + 3, 2 * r - 8, r - 4)
+            painter.drawText(top_rect, Qt.AlignCenter, wrapped_name)
 
             # Bottom: Outputs
             out_lines = []
@@ -211,14 +278,19 @@ class FSMStateCircleItem(QGraphicsItem):
             out_rect = QRectF(-r + 4, 4, 2 * r - 8, r - 8)
             painter.drawText(out_rect, Qt.AlignCenter, out_text)
 
-        else: # MEALY
-            top_fsize = 11 if r <= 50 else 12
+        else:  # MEALY
+            base_fsize = 11 if len(name_lines) == 1 else 10
+            avail_w = 2 * r - 12.0
+            top_fsize = self._fit_font_size(name_lines, avail_w, base_fsize, min_size=8)
             painter.setFont(QFont("Segoe UI", top_fsize, QFont.Bold))
-            painter.drawText(rect, Qt.AlignCenter, self.state.name)
+            text_rect = QRectF(-r + 5, -r + 5, 2 * r - 10, 2 * r - 10)
+            painter.drawText(text_rect, Qt.AlignCenter, wrapped_name)
 
 
 class FSMTransitionBadgeItem(QGraphicsItem):
-    """Draggable condition badge tag on an FSM transition arrow"""
+    """Draggable condition & Mealy output badge tag on an FSM transition arrow"""
+    FONT_FAMILY = "Segoe UI"
+    FONT_SIZE = 11
 
     def __init__(self, trans_item: "FSMTransitionItem"):
         super().__init__(trans_item)
@@ -231,6 +303,17 @@ class FSMTransitionBadgeItem(QGraphicsItem):
         )
         self.setZValue(3)
         self.update_position()
+
+    @classmethod
+    def measure_text(cls, text: str) -> Tuple[float, float]:
+        if not text:
+            return 0.0, 0.0
+        font = QFont(cls.FONT_FAMILY, cls.FONT_SIZE, QFont.Bold)
+        fm = QFontMetrics(font)
+        lines = text.splitlines() or [text]
+        tw = max((fm.horizontalAdvance(line) for line in lines), default=0) + 16
+        th = len(lines) * fm.lineSpacing() + 6
+        return float(tw), float(th)
 
     def update_position(self):
         self._is_updating = True
@@ -250,9 +333,7 @@ class FSMTransitionBadgeItem(QGraphicsItem):
         text = self.trans_item.display_text
         if not text:
             return QRectF()
-        fm = QFontMetrics(QFont("Segoe UI", 9, QFont.Bold))
-        tw = fm.horizontalAdvance(text) + 16
-        th = fm.height() + 8
+        tw, th = self.measure_text(text)
         return QRectF(-tw / 2 - 2, -th / 2 - 2, tw + 4, th + 4)
 
     def itemChange(self, change, value):
@@ -270,9 +351,7 @@ class FSMTransitionBadgeItem(QGraphicsItem):
         if not text:
             return
         painter.setRenderHint(QPainter.Antialiasing)
-        fm = QFontMetrics(QFont("Segoe UI", 9, QFont.Bold))
-        tw = fm.horizontalAdvance(text) + 12
-        th = fm.height() + 4
+        tw, th = self.measure_text(text)
         badge_rect = QRectF(-tw / 2, -th / 2, tw, th)
 
         bg_color = QColor(230, 243, 255) if self.isSelected() else QColor(255, 255, 255, 245)
@@ -281,15 +360,127 @@ class FSMTransitionBadgeItem(QGraphicsItem):
         painter.setPen(QPen(border_color, 1.2 if self.isSelected() else 0.8))
         painter.drawRoundedRect(badge_rect, 4, 4)
 
-        painter.setFont(QFont("Segoe UI", 9, QFont.Bold))
+        painter.setFont(QFont(self.FONT_FAMILY, self.FONT_SIZE, QFont.Bold))
         painter.setPen(QPen(QColor(20, 20, 20)))
         painter.drawText(badge_rect, Qt.AlignCenter, text)
+
+
+class FSMTransitionEndpointHandle(QGraphicsItem):
+    """
+    Draggable handle on the circumference of a state circle to adjust
+    the start point or end point of a transition arrow.
+    """
+    RADIUS = 4.5
+
+    def __init__(self, trans_item: "FSMTransitionItem", is_start: bool):
+        super().__init__(trans_item)
+        self.trans_item = trans_item
+        self.is_start = is_start
+        self._is_updating = False
+        self.is_hovered = False
+        self.setAcceptHoverEvents(True)
+        self.setFlags(
+            QGraphicsItem.ItemIsMovable |
+            QGraphicsItem.ItemSendsGeometryChanges
+        )
+        self.setZValue(5)
+        self.setCursor(Qt.CrossCursor)
+        role_str = "inicio" if is_start else "final"
+        self.setToolTip(
+            f"Arrastre sobre el borde del estado para ajustar el {role_str} de la flecha.\n"
+            f"(Doble clic para restablecer posición automática)"
+        )
+        self.update_position()
+
+    def update_position(self):
+        self._is_updating = True
+        try:
+            self.prepareGeometryChange()
+            pt = getattr(self.trans_item, "start_pt" if self.is_start else "end_pt", None)
+            if pt is not None:
+                self.setPos(self.trans_item.mapFromScene(pt))
+        finally:
+            self._is_updating = False
+
+    def boundingRect(self) -> QRectF:
+        r = self.RADIUS + 5.0
+        return QRectF(-r, -r, 2 * r, 2 * r)
+
+    def shape(self) -> QPainterPath:
+        path = QPainterPath()
+        path.addEllipse(QPointF(0, 0), self.RADIUS + 4.0, self.RADIUS + 4.0)
+        return path
+
+    def itemChange(self, change, value):
+        if change == QGraphicsItem.ItemPositionChange and not getattr(self, "_is_updating", False):
+            state_item = self.trans_item.src_item if self.is_start else self.trans_item.dst_item
+            if state_item:
+                center = state_item.scenePos()
+                r = getattr(state_item, "radius", FSMStateCircleItem.BASE_RADIUS)
+                scene_target = self.trans_item.mapToScene(value)
+                dx = scene_target.x() - center.x()
+                dy = scene_target.y() - center.y()
+                if abs(dx) > 1e-4 or abs(dy) > 1e-4:
+                    angle = math.atan2(dy, dx)
+                    if self.is_start:
+                        self.trans_item.transition.start_angle = angle
+                    else:
+                        self.trans_item.transition.end_angle = angle
+                    snapped_scene = QPointF(center.x() + r * math.cos(angle), center.y() + r * math.sin(angle))
+                    self.trans_item.update_path()
+                    return self.trans_item.mapFromScene(snapped_scene)
+        return super().itemChange(change, value)
+
+    def reset_angle(self):
+        if self.is_start:
+            self.trans_item.transition.start_angle = None
+        else:
+            self.trans_item.transition.end_angle = None
+        self.trans_item.update_path()
+
+    def mouseDoubleClickEvent(self, event):
+        self.reset_angle()
+        if event:
+            event.accept()
+
+    def hoverEnterEvent(self, event):
+        self.is_hovered = True
+        self.update()
+        super().hoverEnterEvent(event)
+
+    def hoverLeaveEvent(self, event):
+        self.is_hovered = False
+        self.update()
+        super().hoverLeaveEvent(event)
+
+    def paint(self, painter: QPainter, option, widget=None):
+        scene = self.scene()
+        is_exporting = bool(getattr(scene, "is_exporting", False)) if scene else (widget is None)
+        if is_exporting:
+            return
+
+        painter.setRenderHint(QPainter.Antialiasing)
+        if self.is_hovered:
+            painter.setBrush(QBrush(QColor(255, 120, 0)))
+            painter.setPen(QPen(QColor(255, 255, 255), 1.5))
+            painter.drawEllipse(QPointF(0, 0), self.RADIUS + 1.0, self.RADIUS + 1.0)
+        else:
+            is_custom = (
+                self.trans_item.transition.start_angle is not None
+                if self.is_start
+                else self.trans_item.transition.end_angle is not None
+            )
+            fill = QColor(0, 102, 204, 210) if is_custom else QColor(230, 243, 255, 210)
+            border = QColor(0, 80, 170)
+            painter.setBrush(QBrush(fill))
+            painter.setPen(QPen(border, 1.2))
+            painter.drawEllipse(QPointF(0, 0), 3.4, 3.4)
 
 
 class FSMTransitionItem(QGraphicsPathItem):
     """
     Transition arrow with smart obstacle avoidance, adaptive curvature,
-    and crisp condition badges.
+    draggable circumference start/end handles, and crisp condition badges.
     Strictly prevents overlapping lines and intersections with intermediate states.
     """
 
@@ -300,10 +491,29 @@ class FSMTransitionItem(QGraphicsPathItem):
         self.src_item = src_item
         self.dst_item = dst_item
         self.display_text = ""
-        self.setZValue(1)
+        self.start_pt: QPointF = QPointF()
+        self.end_pt: QPointF = QPointF()
+        self.setZValue(3)
         self.badge_item: Optional[FSMTransitionBadgeItem] = None
+        self.start_handle: Optional[FSMTransitionEndpointHandle] = None
+        self.end_handle: Optional[FSMTransitionEndpointHandle] = None
         self.update_path()
         self.badge_item = FSMTransitionBadgeItem(self)
+        self.start_handle = FSMTransitionEndpointHandle(self, is_start=True)
+        self.end_handle = FSMTransitionEndpointHandle(self, is_start=False)
+
+    def _sync_auxiliary_items(self):
+        if hasattr(self, "badge_item") and self.badge_item:
+            self.badge_item.update_position()
+        if hasattr(self, "start_handle") and self.start_handle:
+            self.start_handle.update_position()
+        if hasattr(self, "end_handle") and self.end_handle:
+            self.end_handle.update_position()
+
+    def reset_endpoints(self):
+        self.transition.start_angle = None
+        self.transition.end_angle = None
+        self.update_path()
 
     def _prepare_label_text(self):
         cond = self.transition.condition
@@ -313,7 +523,11 @@ class FSMTransitionItem(QGraphicsPathItem):
 
         if self.fsm.fsm_type == FSMType.MEALY and self.transition.mealy_outputs:
             out_strs = [f"{k}={v}" for k, v in self.transition.mealy_outputs.items()]
-            cond = f"{cond} / {','.join(out_strs)}"
+            outs_joined = ", ".join(out_strs)
+            if len(cond) + len(outs_joined) > 18:
+                cond = f"{cond} /\n{outs_joined}"
+            else:
+                cond = f"{cond} / {outs_joined}"
 
         self.display_text = cond
 
@@ -324,6 +538,7 @@ class FSMTransitionItem(QGraphicsPathItem):
         r1 = getattr(self.src_item, "radius", FSMStateCircleItem.BASE_RADIUS)
         r2 = getattr(self.dst_item, "radius", FSMStateCircleItem.BASE_RADIUS)
         self._prepare_label_text()
+        num_lines = len(self.display_text.splitlines()) if self.display_text else 1
 
         path = QPainterPath()
 
@@ -331,23 +546,45 @@ class FSMTransitionItem(QGraphicsPathItem):
         # 1. Self-Loop Handling (IPD432 slide 11, 25, 36)
         # -------------------------------------------------------------
         if self.src_item == self.dst_item:
-            # Arch cleanly above the state circle without touching labels or perimeter
-            rad_exit = math.radians(130)
-            rad_enter = math.radians(50)
-            start_pt = QPointF(p1.x() + r1 * math.cos(rad_exit), p1.y() - r1 * math.sin(rad_exit))
-            end_pt = QPointF(p1.x() + r1 * math.cos(rad_enter), p1.y() - r1 * math.sin(rad_enter))
+            # Default: arch cleanly above the state circle without touching labels or perimeter
+            default_a1 = -math.radians(130)
+            default_a2 = -math.radians(50)
+            a1 = self.transition.start_angle if self.transition.start_angle is not None else default_a1
+            a2 = self.transition.end_angle if self.transition.end_angle is not None else default_a2
+
+            start_pt = QPointF(p1.x() + r1 * math.cos(a1), p1.y() + r1 * math.sin(a1))
+            end_pt = QPointF(p1.x() + r1 * math.cos(a2), p1.y() + r1 * math.sin(a2))
 
             loop_h = max(50.0, r1 * 0.9)
-            c1 = QPointF(start_pt.x() - 15, start_pt.y() - loop_h)
-            c2 = QPointF(end_pt.x() + 15, end_pt.y() - loop_h)
+            extra_h = (num_lines - 1) * 9.0
+            if self.transition.start_angle is None and self.transition.end_angle is None:
+                c1 = QPointF(start_pt.x() - 15, start_pt.y() - loop_h)
+                c2 = QPointF(end_pt.x() + 15, end_pt.y() - loop_h)
+                self.arrow_angle = 120.0
+                self.label_pos = QPointF(p1.x(), p1.y() - r1 - loop_h - 12 - extra_h)
+            else:
+                ctrl_dist = loop_h * 1.15
+                c1 = QPointF(start_pt.x() + ctrl_dist * math.cos(a1), start_pt.y() + ctrl_dist * math.sin(a1))
+                c2 = QPointF(end_pt.x() + ctrl_dist * math.cos(a2), end_pt.y() + ctrl_dist * math.sin(a2))
+                self.arrow_angle = math.degrees(math.atan2(end_pt.y() - c2.y(), end_pt.x() - c2.x()))
+                apex = 0.125 * start_pt + 0.375 * c1 + 0.375 * c2 + 0.125 * end_pt
+                mid_dx = apex.x() - p1.x()
+                mid_dy = apex.y() - p1.y()
+                mid_len = math.hypot(mid_dx, mid_dy) or 1.0
+                offset_dist = 20.0 + extra_h
+                self.label_pos = QPointF(
+                    apex.x() + (mid_dx / mid_len) * offset_dist,
+                    apex.y() + (mid_dy / mid_len) * offset_dist
+                )
 
             path.moveTo(start_pt)
             path.cubicTo(c1, c2, end_pt)
             self.setPath(path)
 
+            self.start_pt = start_pt
+            self.end_pt = end_pt
             self.arrow_tip = end_pt
-            self.arrow_angle = 120.0
-            self.label_pos = QPointF(p1.x(), p1.y() - r1 - loop_h - 10)
+            self._sync_auxiliary_items()
             return
 
         # -------------------------------------------------------------
@@ -424,38 +661,63 @@ class FSMTransitionItem(QGraphicsPathItem):
         ctrl_y = mid_y + norm_y * (total_curvature * curve_dir)
         ctrl_pt = QPointF(ctrl_x, ctrl_y)
 
-        # Angular circle attachment points
+        # Default angular circle attachment points
         angle_to_ctrl_1 = math.atan2(ctrl_y - p1.y(), ctrl_x - p1.x())
         angle_to_ctrl_2 = math.atan2(ctrl_y - p2.y(), ctrl_x - p2.x())
 
-        start_pt = QPointF(p1.x() + r1 * math.cos(angle_to_ctrl_1), p1.y() + r1 * math.sin(angle_to_ctrl_1))
-        end_pt = QPointF(p2.x() + r2 * math.cos(angle_to_ctrl_2), p2.y() + r2 * math.sin(angle_to_ctrl_2))
+        a1 = self.transition.start_angle if self.transition.start_angle is not None else angle_to_ctrl_1
+        a2 = self.transition.end_angle if self.transition.end_angle is not None else angle_to_ctrl_2
 
-        path.moveTo(start_pt)
-        path.quadTo(ctrl_pt, end_pt)
+        start_pt = QPointF(p1.x() + r1 * math.cos(a1), p1.y() + r1 * math.sin(a1))
+        end_pt = QPointF(p2.x() + r2 * math.cos(a2), p2.y() + r2 * math.sin(a2))
+
+        label_out_dist = 16.0 + (num_lines - 1) * 8.0
+        if self.transition.start_angle is None and self.transition.end_angle is None:
+            path.moveTo(start_pt)
+            path.quadTo(ctrl_pt, end_pt)
+            self.arrow_angle = math.degrees(math.atan2(end_pt.y() - ctrl_pt.y(), end_pt.x() - ctrl_pt.x()))
+            self.label_pos = QPointF(
+                ctrl_x + norm_x * (label_out_dist * curve_dir),
+                ctrl_y + norm_y * (label_out_dist * curve_dir)
+            )
+        else:
+            dist_c1 = max(40.0, (2.0 / 3.0) * (math.hypot(ctrl_x - p1.x(), ctrl_y - p1.y()) - r1))
+            dist_c2 = max(40.0, (2.0 / 3.0) * (math.hypot(ctrl_x - p2.x(), ctrl_y - p2.y()) - r2))
+            c1 = QPointF(start_pt.x() + dist_c1 * math.cos(a1), start_pt.y() + dist_c1 * math.sin(a1))
+            c2 = QPointF(end_pt.x() + dist_c2 * math.cos(a2), end_pt.y() + dist_c2 * math.sin(a2))
+
+            path.moveTo(start_pt)
+            path.cubicTo(c1, c2, end_pt)
+            self.arrow_angle = math.degrees(math.atan2(end_pt.y() - c2.y(), end_pt.x() - c2.x()))
+
+            apex = 0.125 * start_pt + 0.375 * c1 + 0.375 * c2 + 0.125 * end_pt
+            chord_mid = 0.5 * (start_pt + end_pt)
+            defl = apex - chord_mid
+            defl_len = math.hypot(defl.x(), defl.y())
+            if defl_len > 2.0:
+                ux, uy = defl.x() / defl_len, defl.y() / defl_len
+            else:
+                ux, uy = norm_x * curve_dir, norm_y * curve_dir
+            self.label_pos = QPointF(apex.x() + ux * label_out_dist, apex.y() + uy * label_out_dist)
+
         self.setPath(path)
-
+        self.start_pt = start_pt
+        self.end_pt = end_pt
         self.arrow_tip = end_pt
-        self.arrow_angle = math.degrees(math.atan2(end_pt.y() - ctrl_pt.y(), end_pt.x() - ctrl_pt.x()))
+        self._sync_auxiliary_items()
 
-        # Label placed at the outer apex of the arc with clean margin
-        label_out_dist = 14.0
-        self.label_pos = QPointF(
-            ctrl_x + norm_x * (label_out_dist * curve_dir),
-            ctrl_y + norm_y * (label_out_dist * curve_dir)
-        )
-        if hasattr(self, "badge_item") and self.badge_item:
-            self.badge_item.update_position()
+    def shape(self) -> QPainterPath:
+        stroker = QPainterPathStroker()
+        stroker.setWidth(10.0)
+        return stroker.createStroke(self.path())
 
     def boundingRect(self) -> QRectF:
         rect = self.path().boundingRect()
         if hasattr(self, "badge_item") and self.badge_item:
             rect = rect.united(self.badge_item.mapToParent(self.badge_item.boundingRect()).boundingRect())
         elif hasattr(self, "label_pos") and hasattr(self, "display_text") and self.display_text:
-            fm = QFontMetrics(QFont("Segoe UI", 9, QFont.Bold))
-            tw = fm.horizontalAdvance(self.display_text) + 20
-            th = fm.height() + 10
-            badge_rect = QRectF(self.label_pos.x() - tw / 2, self.label_pos.y() - th / 2, tw, th)
+            tw, th = FSMTransitionBadgeItem.measure_text(self.display_text)
+            badge_rect = QRectF(self.label_pos.x() - tw / 2 - 4, self.label_pos.y() - th / 2 - 4, tw + 8, th + 8)
             rect = rect.united(badge_rect)
         if hasattr(self, "arrow_tip"):
             tip_rect = QRectF(self.arrow_tip.x() - 15, self.arrow_tip.y() - 15, 30, 30)
@@ -523,8 +785,135 @@ class FSMResetArrowItem(QGraphicsItem):
         painter.setBrush(QBrush(QColor(30, 30, 30)))
         painter.drawPolygon(QPolygonF([tip_pt, p1, p2]))
 
-        painter.setFont(QFont("Segoe UI", 9, QFont.Bold))
-        painter.drawText(QRectF(start_pt.x() - 25, start_pt.y() - 18, 60, 20), Qt.AlignCenter, "Reset")
+        painter.setFont(QFont("Segoe UI", 10, QFont.Bold))
+        painter.drawText(QRectF(start_pt.x() - 28, start_pt.y() - 20, 66, 22), Qt.AlignCenter, "Reset")
+
+
+class FSMLegendItem(QGraphicsItem):
+    """
+    Formal I/O Legend box for FSM Diagrams (IPD432 / ELO212).
+    Lists all declared Inputs (Entradas) and Outputs (Salidas) with their bit widths.
+    """
+
+    def __init__(self, fsm: FSM):
+        super().__init__()
+        self.fsm = fsm
+        self._is_updating = False
+        self._width = 180.0
+        self._height = 100.0
+        self._in_lines: List[str] = []
+        self._out_lines: List[str] = []
+        self.setFlags(
+            QGraphicsItem.ItemIsMovable |
+            QGraphicsItem.ItemIsSelectable |
+            QGraphicsItem.ItemSendsGeometryChanges
+        )
+        self.setZValue(4)
+        self.setToolTip("Leyenda de Entradas y Salidas (Arrastre para mover, Shift+R para restablecer posición)")
+        self.update_content()
+
+    @staticmethod
+    def _format_port(p: Port) -> str:
+        if p.width > 1:
+            return f"• {p.name}[{p.width - 1}:0] ({p.width} bits)"
+        return f"• {p.name} (1 bit)"
+
+    def update_content(self):
+        self.prepareGeometryChange()
+        inputs, outputs = self.fsm.get_all_declared_io()
+        self._in_lines = [self._format_port(p) for p in inputs] if inputs else ["• (ninguna)"]
+        self._out_lines = [self._format_port(p) for p in outputs] if outputs else ["• (ninguna)"]
+
+        title_font = QFont("Segoe UI", 10, QFont.Bold)
+        sec_font = QFont("Segoe UI", 9, QFont.Bold)
+        item_font = QFont("Consolas", 9, QFont.Normal)
+
+        fm_title = QFontMetrics(title_font)
+        fm_sec = QFontMetrics(sec_font)
+        fm_item = QFontMetrics(item_font)
+
+        max_w = fm_title.horizontalAdvance("Leyenda (Entradas / Salidas)")
+        max_w = max(max_w, fm_sec.horizontalAdvance("Entradas:"), fm_sec.horizontalAdvance("Salidas:"))
+        for line in self._in_lines + self._out_lines:
+            max_w = max(max_w, fm_item.horizontalAdvance(line) + 10)
+
+        self._width = float(max(165, max_w + 26))
+        header_h = 26.0
+        sec_h = float(fm_sec.lineSpacing() + 2)
+        item_h = float(fm_item.lineSpacing() + 1)
+        total_items = len(self._in_lines) + len(self._out_lines)
+        self._height = header_h + 2 * sec_h + total_items * item_h + 20.0
+
+    def boundingRect(self) -> QRectF:
+        return QRectF(-2, -2, self._width + 4, self._height + 4)
+
+    def itemChange(self, change, value):
+        if change == QGraphicsItem.ItemPositionHasChanged and not getattr(self, "_is_updating", False):
+            pos = self.pos()
+            self.fsm.legend_pos = (pos.x(), pos.y())
+        return super().itemChange(change, value)
+
+    def reset_position(self):
+        self.fsm.legend_pos = None
+        if self.scene() and hasattr(self.scene(), "update_legend_position"):
+            self.scene().update_legend_position()
+
+    def paint(self, painter: QPainter, option, widget=None):
+        painter.setRenderHint(QPainter.Antialiasing)
+        box_rect = QRectF(0, 0, self._width, self._height)
+
+        border_col = QColor(0, 102, 204) if self.isSelected() else QColor(60, 60, 65)
+        painter.setPen(QPen(border_col, 1.5))
+        painter.setBrush(QBrush(QColor(252, 252, 254, 248)))
+        painter.drawRoundedRect(box_rect, 5, 5)
+
+        # Header banner
+        header_h = 26.0
+        header_rect = QRectF(0, 0, self._width, header_h)
+        painter.save()
+        clip_path = QPainterPath()
+        clip_path.addRoundedRect(box_rect, 5, 5)
+        painter.setClipPath(clip_path)
+        painter.fillRect(header_rect, QColor(235, 241, 248))
+        painter.restore()
+        painter.setPen(QPen(border_col, 1.2))
+        painter.drawLine(QLineF(0, header_h, self._width, header_h))
+
+        # Title
+        painter.setFont(QFont("Segoe UI", 10, QFont.Bold))
+        painter.setPen(QPen(QColor(20, 25, 35)))
+        painter.drawText(header_rect, Qt.AlignCenter, "Leyenda (Entradas / Salidas)")
+
+        sec_font = QFont("Segoe UI", 9, QFont.Bold)
+        item_font = QFont("Consolas", 9, QFont.Normal)
+        fm_sec = QFontMetrics(sec_font)
+        fm_item = QFontMetrics(item_font)
+
+        y = header_h + 6.0
+        # Inputs section
+        painter.setFont(sec_font)
+        painter.setPen(QPen(QColor(0, 80, 160)))
+        painter.drawText(QRectF(10, y, self._width - 20, fm_sec.lineSpacing()), Qt.AlignLeft | Qt.AlignVCenter, "Entradas:")
+        y += fm_sec.lineSpacing() + 2
+
+        painter.setFont(item_font)
+        painter.setPen(QPen(QColor(30, 30, 30)))
+        for line in self._in_lines:
+            painter.drawText(QRectF(16, y, self._width - 24, fm_item.lineSpacing()), Qt.AlignLeft | Qt.AlignVCenter, line)
+            y += fm_item.lineSpacing() + 1
+
+        y += 4.0
+        # Outputs section
+        painter.setFont(sec_font)
+        painter.setPen(QPen(QColor(150, 50, 0)))
+        painter.drawText(QRectF(10, y, self._width - 20, fm_sec.lineSpacing()), Qt.AlignLeft | Qt.AlignVCenter, "Salidas:")
+        y += fm_sec.lineSpacing() + 2
+
+        painter.setFont(item_font)
+        painter.setPen(QPen(QColor(30, 30, 30)))
+        for line in self._out_lines:
+            painter.drawText(QRectF(16, y, self._width - 24, fm_item.lineSpacing()), Qt.AlignLeft | Qt.AlignVCenter, line)
+            y += fm_item.lineSpacing() + 1
 
 
 class FSMGraphicsScene(QGraphicsScene):
@@ -535,6 +924,7 @@ class FSMGraphicsScene(QGraphicsScene):
         self.state_items: Dict[str, FSMStateCircleItem] = {}
         self.trans_items: List[FSMTransitionItem] = []
         self.reset_arrow: Optional[FSMResetArrowItem] = None
+        self.legend_item: Optional[FSMLegendItem] = None
         self.rebuild_scene()
 
     def rebuild_scene(self):
@@ -542,6 +932,7 @@ class FSMGraphicsScene(QGraphicsScene):
         self.state_items.clear()
         self.trans_items.clear()
         self.reset_arrow = None
+        self.legend_item = None
 
         if not self.fsm.states:
             return
@@ -567,9 +958,47 @@ class FSMGraphicsScene(QGraphicsScene):
             self.reset_arrow = FSMResetArrowItem(self.state_items[init_state.name])
             self.addItem(self.reset_arrow)
 
+        # Add I/O Legend item
+        self.legend_item = FSMLegendItem(self.fsm)
+        self.addItem(self.legend_item)
+        self.update_legend_position()
+
         self.update()
         for v in self.views():
             v.viewport().update()
+
+    def _compute_diagram_bounds_without_legend(self) -> QRectF:
+        rect = QRectF()
+        for s_item in self.state_items.values():
+            rect = rect.united(s_item.sceneBoundingRect())
+        for t_item in self.trans_items:
+            rect = rect.united(t_item.sceneBoundingRect())
+        if self.reset_arrow:
+            rect = rect.united(self.reset_arrow.sceneBoundingRect())
+        return rect
+
+    def update_legend_position(self):
+        if not self.legend_item:
+            return
+        self.legend_item.update_content()
+        self.legend_item._is_updating = True
+        try:
+            if self.fsm.legend_pos is not None:
+                self.legend_item.setPos(self.fsm.legend_pos[0], self.fsm.legend_pos[1])
+            else:
+                diag_rect = self._compute_diagram_bounds_without_legend()
+                if diag_rect.isEmpty():
+                    self.legend_item.setPos(0, 0)
+                else:
+                    self.legend_item.setPos(diag_rect.right() + 30.0, diag_rect.top())
+        finally:
+            self.legend_item._is_updating = False
+
+    def prepare_for_export(self):
+        if self.fsm.states and not self.legend_item:
+            self.legend_item = FSMLegendItem(self.fsm)
+            self.addItem(self.legend_item)
+        self.update_legend_position()
 
     def update_transitions(self):
         for t_item in self.trans_items:
@@ -577,6 +1006,7 @@ class FSMGraphicsScene(QGraphicsScene):
         if self.reset_arrow:
             self.reset_arrow.update_position()
             self.reset_arrow.update()
+        self.update_legend_position()
         self.update()
         for v in self.views():
             v.viewport().update()
@@ -594,6 +1024,7 @@ class FSMGraphicsScene(QGraphicsScene):
             s.y = y
             if s.name in self.state_items:
                 self.state_items[s.name].setPos(x, y)
+        self.fsm.legend_pos = None
         self.update_transitions()
 
     def auto_layout_horizontal(self):
@@ -607,6 +1038,7 @@ class FSMGraphicsScene(QGraphicsScene):
             s.y = 0.0
             if s.name in self.state_items:
                 self.state_items[s.name].setPos(s.x, s.y)
+        self.fsm.legend_pos = None
         self.update_transitions()
 
     def reset_all_transition_labels(self):
@@ -614,6 +1046,8 @@ class FSMGraphicsScene(QGraphicsScene):
             t_item.transition.custom_label_pos = None
             if hasattr(t_item, "badge_item") and t_item.badge_item:
                 t_item.badge_item.update_position()
+        self.fsm.legend_pos = None
+        self.update_legend_position()
         self.update()
         for v in self.views():
             v.viewport().update()
@@ -627,18 +1061,30 @@ class FSMGraphicsScene(QGraphicsScene):
 
     def contextMenuEvent(self, event):
         item = self.itemAt(event.scenePos(), self.views()[0].transform()) if self.views() else None
-        target_badge = None
-        if isinstance(item, FSMTransitionBadgeItem):
-            target_badge = item
-        elif isinstance(item, FSMTransitionItem) and hasattr(item, "badge_item"):
-            target_badge = item.badge_item
+        target_trans = None
+        if isinstance(item, FSMTransitionItem):
+            target_trans = item
+        elif isinstance(item, (FSMTransitionBadgeItem, FSMTransitionEndpointHandle)):
+            target_trans = item.trans_item
 
-        if target_badge:
+        if target_trans:
             menu = QMenu()
-            act_reset = menu.addAction("🏷️ Restablecer Posición de Etiqueta (Shift+R)")
+            act_reset_pts = menu.addAction("🔄 Restablecer Puntos de Inicio y Fin de Flecha")
+            act_reset_lbl = menu.addAction("🏷️ Restablecer Posición de Etiqueta (Shift+R)")
             action = menu.exec(event.screenPos())
-            if action == act_reset:
-                target_badge.reset_position()
+            if action == act_reset_pts:
+                target_trans.reset_endpoints()
+            elif action == act_reset_lbl and target_trans.badge_item:
+                target_trans.badge_item.reset_position()
+            event.accept()
+            return
+
+        if isinstance(item, FSMLegendItem):
+            menu = QMenu()
+            act_reset_leg = menu.addAction("🏷️ Restablecer Posición de la Leyenda")
+            action = menu.exec(event.screenPos())
+            if action == act_reset_leg:
+                item.reset_position()
             event.accept()
             return
 
@@ -646,7 +1092,7 @@ class FSMGraphicsScene(QGraphicsScene):
 
 
 class FSMDesignerWidget(QWidget):
-    """Complete FSM Designer Tab with options table, validator, visualizer & SV generator"""
+    """Complete FSM Designer Tab with options table, validator, visualizer & I/O management"""
 
     def __init__(self, fsm: Optional[FSM] = None, parent=None):
         super().__init__(parent)
@@ -681,7 +1127,7 @@ class FSMDesignerWidget(QWidget):
     def _init_ui(self):
         main_layout = QHBoxLayout(self)
 
-        # Splitter: Left (Options & Tables), Right (Diagram & SystemVerilog)
+        # Splitter: Left (Options & Tables), Right (Diagram)
         splitter = QSplitter(Qt.Horizontal)
         main_layout.addWidget(splitter)
 
@@ -730,7 +1176,7 @@ class FSMDesignerWidget(QWidget):
         form.addRow("Codificación (Vivado):", self.combo_encoding)
         left_layout.addWidget(param_box)
 
-        # Tabs for Tables (States, Transitions)
+        # Tabs for Tables (States, Transitions, Ports)
         table_tabs = QTabWidget()
 
         # States Tab
@@ -777,6 +1223,26 @@ class FSMDesignerWidget(QWidget):
         t_layout.addLayout(t_btn_layout)
         table_tabs.addTab(trans_w, "Transiciones")
 
+        # Ports (Entradas / Salidas) Tab
+        ports_w = QWidget()
+        p_layout = QVBoxLayout(ports_w)
+        self.table_ports = QTableWidget(0, 4)
+        self.table_ports.setHorizontalHeaderLabels(["Nombre", "Dirección (input/output)", "Ancho (bits)", "Valor Defecto"])
+        self.table_ports.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        p_btn_layout = QHBoxLayout()
+        btn_add_in = QPushButton("+ Agregar Entrada")
+        btn_add_out = QPushButton("+ Agregar Salida")
+        btn_del_port = QPushButton("- Eliminar Puerto")
+        btn_add_in.clicked.connect(lambda: self.add_port("input"))
+        btn_add_out.clicked.connect(lambda: self.add_port("output"))
+        btn_del_port.clicked.connect(self.del_port)
+        p_btn_layout.addWidget(btn_add_in)
+        p_btn_layout.addWidget(btn_add_out)
+        p_btn_layout.addWidget(btn_del_port)
+        p_layout.addWidget(self.table_ports)
+        p_layout.addLayout(p_btn_layout)
+        table_tabs.addTab(ports_w, "Entradas / Salidas (I/O)")
+
         left_layout.addWidget(table_tabs)
 
         # Validation Box
@@ -794,6 +1260,7 @@ class FSMDesignerWidget(QWidget):
         # Connect cell changed signals
         self.table_states.cellChanged.connect(self._sync_states_from_table)
         self.table_trans.cellChanged.connect(self._sync_trans_from_table)
+        self.table_ports.cellChanged.connect(self._sync_ports_from_table)
 
         splitter.addWidget(left_widget)
 
@@ -847,6 +1314,7 @@ class FSMDesignerWidget(QWidget):
 
         self._populate_states_table()
         self._populate_trans_table()
+        self._populate_ports_table()
         self.fsm_scene.rebuild_scene()
         self.run_validation()
 
@@ -859,6 +1327,94 @@ class FSMDesignerWidget(QWidget):
         self.fsm.reset_type = ResetType(self.combo_reset.currentText())
         self.fsm.encoding = FSMEncoding(self.combo_encoding.currentText())
         self.fsm_scene.rebuild_scene()
+
+    def _populate_ports_table(self):
+        self.table_ports.blockSignals(True)
+        all_in, all_out = self.fsm.get_all_declared_io()
+        all_ports = all_in + all_out
+        self.table_ports.setRowCount(len(all_ports))
+        for row, p in enumerate(all_ports):
+            self.table_ports.setItem(row, 0, QTableWidgetItem(p.name))
+            self.table_ports.setItem(row, 1, QTableWidgetItem(p.direction))
+            self.table_ports.setItem(row, 2, QTableWidgetItem(str(p.width)))
+            self.table_ports.setItem(row, 3, QTableWidgetItem(p.default_val))
+        self.table_ports.blockSignals(False)
+
+    def _sync_ports_from_table(self):
+        inputs = []
+        outputs = []
+        for r in range(self.table_ports.rowCount()):
+            name_item = self.table_ports.item(r, 0)
+            dir_item = self.table_ports.item(r, 1)
+            w_item = self.table_ports.item(r, 2)
+            def_item = self.table_ports.item(r, 3)
+
+            name = name_item.text().strip() if name_item else f"sig_{r}"
+            if not name:
+                continue
+            raw_dir = dir_item.text().strip().lower() if dir_item else "input"
+            direction = "output" if raw_dir in ("output", "salida", "out", "o") else "input"
+            try:
+                width = max(1, int(w_item.text())) if w_item else 1
+            except ValueError:
+                width = 1
+            default_val = def_item.text().strip() if def_item else ("1'b0" if width == 1 else f"{width}'b0")
+
+            p = Port(name=name, direction=direction, width=width, default_val=default_val)
+            if direction == "output":
+                outputs.append(p)
+            else:
+                inputs.append(p)
+
+        self.fsm.inputs = inputs
+        self.fsm.outputs = outputs
+        self.fsm_scene.rebuild_scene()
+
+    def _auto_sync_ports_from_diagram(self, prev_ext_in: set[str], prev_ext_out: set[str]):
+        """Synchronizes FSM inputs/outputs when signals in states/transitions are edited."""
+        ext_in_ports, ext_out_ports = self.fsm.extract_diagram_io()
+        curr_in_names = {p.name for p in ext_in_ports}
+        curr_out_names = {p.name for p in ext_out_ports}
+
+        # Keep manually declared ports + currently active diagram signals, removing stale auto-signals
+        removed_in = prev_ext_in - curr_in_names
+        removed_out = prev_ext_out - curr_out_names
+
+        in_map = {p.name: p for p in self.fsm.inputs if p.name not in removed_in}
+        for p in ext_in_ports:
+            if p.name not in in_map:
+                in_map[p.name] = p
+            else:
+                in_map[p.name].width = max(in_map[p.name].width, p.width)
+
+        out_map = {p.name: p for p in self.fsm.outputs if p.name not in removed_out}
+        for p in ext_out_ports:
+            if p.name not in out_map:
+                out_map[p.name] = p
+            else:
+                out_map[p.name].width = max(out_map[p.name].width, p.width)
+
+        self.fsm.inputs = list(in_map.values())
+        self.fsm.outputs = list(out_map.values())
+        self._populate_ports_table()
+
+    def add_port(self, direction: str = "input"):
+        self.table_ports.blockSignals(True)
+        r = self.table_ports.rowCount()
+        self.table_ports.insertRow(r)
+        prefix = "out" if direction == "output" else "in"
+        self.table_ports.setItem(r, 0, QTableWidgetItem(f"{prefix}_{r}"))
+        self.table_ports.setItem(r, 1, QTableWidgetItem(direction))
+        self.table_ports.setItem(r, 2, QTableWidgetItem("1"))
+        self.table_ports.setItem(r, 3, QTableWidgetItem("1'b0"))
+        self.table_ports.blockSignals(False)
+        self._sync_ports_from_table()
+
+    def del_port(self):
+        r = self.table_ports.currentRow()
+        if r >= 0:
+            self.table_ports.removeRow(r)
+            self._sync_ports_from_table()
 
     def _populate_states_table(self):
         self.table_states.blockSignals(True)
@@ -875,6 +1431,10 @@ class FSMDesignerWidget(QWidget):
         self.table_states.blockSignals(False)
 
     def _sync_states_from_table(self):
+        prev_in, prev_out = self.fsm.extract_diagram_io()
+        prev_in_set = {p.name for p in prev_in}
+        prev_out_set = {p.name for p in prev_out}
+
         for r in range(self.table_states.rowCount()):
             if r >= len(self.fsm.states):
                 break
@@ -896,6 +1456,7 @@ class FSMDesignerWidget(QWidget):
                         outs_dict[k.strip()] = v.strip()
                 s.moore_outputs = outs_dict
 
+        self._auto_sync_ports_from_diagram(prev_in_set, prev_out_set)
         self.fsm_scene.rebuild_scene()
 
     def _on_state_cell_double_clicked(self, row: int, col: int):
@@ -903,10 +1464,15 @@ class FSMDesignerWidget(QWidget):
             self.open_state_outputs_dialog(self.fsm.states[row])
 
     def open_state_outputs_dialog(self, state: State):
+        prev_in, prev_out = self.fsm.extract_diagram_io()
+        prev_in_set = {p.name for p in prev_in}
+        prev_out_set = {p.name for p in prev_out}
+
         dlg = StateOutputsDialog(state, self)
         if dlg.exec():
             state.moore_outputs = dlg.get_outputs()
             self._populate_states_table()
+            self._auto_sync_ports_from_diagram(prev_in_set, prev_out_set)
             self.fsm_scene.rebuild_scene()
 
     def edit_selected_state_outputs(self):
@@ -929,6 +1495,10 @@ class FSMDesignerWidget(QWidget):
         self.table_trans.blockSignals(False)
 
     def _sync_trans_from_table(self):
+        prev_in, prev_out = self.fsm.extract_diagram_io()
+        prev_in_set = {p.name for p in prev_in}
+        prev_out_set = {p.name for p in prev_out}
+
         for r in range(self.table_trans.rowCount()):
             if r >= len(self.fsm.transitions):
                 break
@@ -958,6 +1528,7 @@ class FSMDesignerWidget(QWidget):
                         m_dict[k.strip()] = v.strip()
                 t.mealy_outputs = m_dict
 
+        self._auto_sync_ports_from_diagram(prev_in_set, prev_out_set)
         self.fsm_scene.rebuild_scene()
 
     def add_state(self):
@@ -978,6 +1549,7 @@ class FSMDesignerWidget(QWidget):
             self.fsm.transitions = [t for t in self.fsm.transitions if t.source != s_name and t.target != s_name]
             self._populate_states_table()
             self._populate_trans_table()
+            self._populate_ports_table()
             self.fsm_scene.rebuild_scene()
 
     def add_transition(self):
@@ -995,6 +1567,7 @@ class FSMDesignerWidget(QWidget):
         if 0 <= r < len(self.fsm.transitions):
             del self.fsm.transitions[r]
             self._populate_trans_table()
+            self._populate_ports_table()
             self.fsm_scene.rebuild_scene()
 
     def auto_layout(self):

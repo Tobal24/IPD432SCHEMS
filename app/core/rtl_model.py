@@ -116,15 +116,31 @@ class RTLComponent:
 
     @classmethod
     def from_dict(cls, data: dict) -> "RTLComponent":
+        ctype = ComponentType(data["type"])
+        pins = [RTLPin.from_dict(p) for p in data.get("pins", [])]
+        w = float(data.get("width", 80.0))
+        h = float(data.get("height", 80.0))
+        if ctype == ComponentType.MUX:
+            in_pins = [p for p in pins if p.direction == PinDirection.IN]
+            n_in = len(in_pins)
+            if n_in >= 3 and h < (n_in + 1) * 20.0:
+                h = float((n_in + 3) * 20)
+            max_lbl = max((len(p.name) for p in in_pins), default=1)
+            if max_lbl > 3 and w < 25.0 + max_lbl * 8.0:
+                w = float(math.ceil((25.0 + max_lbl * 8.0) / 20.0) * 20)
+            offsets = compute_mux_input_offsets(n_in, h)
+            for idx, p in enumerate(in_pins):
+                if idx < len(offsets):
+                    p.offset = offsets[idx]
         return cls(
             id=data["id"],
-            type=ComponentType(data["type"]),
+            type=ctype,
             label=data.get("label", ""),
             x=data.get("x", 0.0),
             y=data.get("y", 0.0),
-            width=data.get("width", 80.0),
-            height=data.get("height", 80.0),
-            pins=[RTLPin.from_dict(p) for p in data.get("pins", [])],
+            width=w,
+            height=h,
+            pins=pins,
             properties=dict(data.get("properties", {})),
             mirrored=data.get("mirrored", False)
         )
@@ -318,42 +334,70 @@ def parse_slice_width(slice_str: str) -> int:
 
 
 # Helper Component Factory to instantiate compliant standard symbols
-def compute_mux_input_offsets(num_inputs: int, height: float) -> List[float]:
+def compute_mux_input_positions(num_inputs: int, height: float, grid: float = 20.0) -> List[float]:
     """
-    Computes grid-aligned offsets for MUX inputs.
-    Tries 20px grid, then falls back to 10px or 5px grid if height is tight.
-    Pins are placed at multiples of grid spacing, symmetric around height / 2.
+    Computes strictly uniform, grid-aligned vertical positions for MUX inputs.
+    Guarantees:
+    - Identical spacing (step) between every pair of adjacent inputs.
+    - Symmetric placement around height / 2 whenever grid parity allows.
+    - Keeps inputs clear of the sloped top/bottom trapezoid edges when height allows.
     """
     if num_inputs <= 0:
         return []
-    available = [float(y) for y in range(20, int(height), 20)]
-    if len(available) < num_inputs:
-        available_10 = [float(y) for y in range(10, int(height), 10)]
-        if len(available_10) >= num_inputs:
-            available = available_10
-        else:
-            available_5 = [float(y) for y in range(5, int(height), 5)]
-            if len(available_5) >= num_inputs:
-                available = available_5
 
-    if len(available) == num_inputs:
-        return [y / height for y in available]
-    elif len(available) > num_inputs:
-        if num_inputs % 2 == 0 and len(available) % 2 == 1:
-            mid_idx = len(available) // 2
-            half = num_inputs // 2
-            top_slots = available[mid_idx - half:mid_idx]
-            bot_slots = available[mid_idx + 1:mid_idx + 1 + half]
-            chosen = top_slots + bot_slots
-            if len(chosen) == num_inputs:
-                return [y / height for y in chosen]
-        step = (len(available) - 1) / (num_inputs - 1) if num_inputs > 1 else 0
-        chosen_indices = [round(i * step) for i in range(num_inputs)] if num_inputs > 1 else [len(available) // 2]
-        if len(set(chosen_indices)) == num_inputs:
-            return [available[idx] / height for idx in chosen_indices]
-        return [available[i] / height for i in range(num_inputs)]
+    g = float(grid)
+    if (num_inputs + 1) * g > height:
+        if g > 10.0 and (num_inputs + 1) * 10.0 <= height:
+            g = 10.0
+        elif g > 5.0 and (num_inputs + 1) * 5.0 <= height:
+            g = 5.0
+        else:
+            g = 5.0
+
+    h_snapped = max(round(height / g) * g, 2.0 * g)
+    if num_inputs == 1:
+        return [round((h_snapped * 0.5) / g) * g]
+
+    M = max(2, round(h_snapped / g))
+    max_total_units = max(1, M - 2)  # At least 1*g margin from top (0) and bottom (h)
+
+    if num_inputs == 2:
+        k = max(1, round(0.5 * M))
     else:
-        return [(i + 1) / (num_inputs + 1) for i in range(num_inputs)]
+        safe_units = max(1, M - 4)  # Prefer 2*g margin from top/bottom to clear sloped edges
+        k = max(1, safe_units // (num_inputs - 1))
+
+    while (num_inputs - 1) * k > max_total_units and k > 1:
+        k -= 1
+
+    # Prefer even remaining grid units so top and bottom margins are strictly equal
+    rem_units = M - (num_inputs - 1) * k
+    if rem_units % 2 != 0 and k > 1:
+        if (M - (num_inputs - 1) * (k - 1)) % 2 == 0:
+            k -= 1
+
+    step = k * g
+    total_span = (num_inputs - 1) * step
+    y_min = g
+    y_max = max(y_min, h_snapped - g)
+    avail_span = max(0.0, y_max - y_min)
+    remaining = max(0.0, avail_span - total_span)
+    y_start = round((y_min + remaining * 0.5) / g) * g
+
+    if y_start + total_span > y_max:
+        y_start = max(y_min, y_max - total_span)
+
+    return [y_start + i * step for i in range(num_inputs)]
+
+
+def compute_mux_input_offsets(num_inputs: int, height: float, grid: float = 20.0) -> List[float]:
+    """
+    Computes normalized offsets (0.0 to 1.0) for MUX inputs with strictly uniform spacing.
+    """
+    if num_inputs <= 0 or height <= 0:
+        return []
+    positions = compute_mux_input_positions(num_inputs, height, grid)
+    return [pos / height for pos in positions]
 
 
 def compute_block_pin_positions(num_pins: int, height: float, grid: float = 20.0) -> List[float]:
@@ -428,8 +472,10 @@ class ComponentFactory:
         if mux_h is not None:
             final_h = max(min_allowed_h, float(mux_h))
         else:
-            raw_h = max(80.0, num_inputs * 30.0)
-            final_h = round(raw_h / 20.0) * 20.0
+            if num_inputs <= 2:
+                final_h = 80.0
+            else:
+                final_h = float((num_inputs + 3) * 20)
 
         # Input pins on left (wide side) with grid-aligned offsets
         input_offsets = compute_mux_input_offsets(num_inputs, final_h)

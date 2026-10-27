@@ -237,6 +237,7 @@ class MainWindow(QMainWindow):
                     item = RTLWireItem(w)
                     scene.addItem(item)
                     scene.wire_items[w.id] = item
+                    scene.recompute_wire_path(item)
 
                 for j in sch.junctions:
                     item = RTLJunctionItem(j.x, j.y, j.id)

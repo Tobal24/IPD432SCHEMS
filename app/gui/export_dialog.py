@@ -14,17 +14,41 @@ from PySide6.QtWidgets import QGraphicsScene, QFileDialog, QMessageBox, QWidget
 
 class DiagramExporter:
     @staticmethod
-    def export_svg(scene: QGraphicsScene, parent: QWidget, default_name: str = "diagram.svg"):
-        path, _ = QFileDialog.getSaveFileName(parent, "Exportar Diagrama como SVG", default_name, "Vector SVG (*.svg)")
-        if not path:
-            return
+    def _render_scene_clean(scene: QGraphicsScene, painter: QPainter, target_rect: QRectF, source_rect: QRectF):
+        """Renders the scene with export mode enabled (suppressing pin circles, hover states, and selection handles)."""
+        prev_exporting = getattr(scene, "is_exporting", False)
+        prev_wiring = getattr(scene, "wiring_active", False)
+        selected_items = list(scene.selectedItems())
+        try:
+            scene.is_exporting = True
+            scene.wiring_active = False
+            if selected_items:
+                scene.clearSelection()
+            if hasattr(scene, "prepare_for_export"):
+                scene.prepare_for_export()
+            scene.render(painter, target_rect, source_rect)
+        finally:
+            scene.is_exporting = prev_exporting
+            scene.wiring_active = prev_wiring
+            for item in selected_items:
+                if item.scene() == scene:
+                    item.setSelected(True)
 
+    @staticmethod
+    def export_svg_to_file(scene: QGraphicsScene, path: str) -> bool:
+        selected_items = list(scene.selectedItems())
+        if selected_items:
+            scene.clearSelection()
+        if hasattr(scene, "prepare_for_export"):
+            scene.prepare_for_export()
         rect = scene.itemsBoundingRect()
-        if rect.isEmpty():
-            QMessageBox.warning(parent, "Aviso", "El diagrama está vacío.")
-            return
+        for item in selected_items:
+            if item.scene() == scene:
+                item.setSelected(True)
 
-        # Add padding
+        if rect.isEmpty():
+            return False
+
         pad = 25.0
         rect.adjust(-pad, -pad, pad, pad)
 
@@ -39,24 +63,26 @@ class DiagramExporter:
         if painter.begin(generator):
             painter.setRenderHint(QPainter.Antialiasing)
             painter.setRenderHint(QPainter.TextAntialiasing)
-            # White background
             painter.fillRect(rect, QColor(255, 255, 255))
-            scene.render(painter, rect, rect)
+            DiagramExporter._render_scene_clean(scene, painter, rect, rect)
             painter.end()
-            QMessageBox.information(parent, "Exportado", f"Diagrama SVG exportado exitosamente:\n{path}")
-        else:
-            QMessageBox.critical(parent, "Error", "No se pudo generar el archivo SVG.")
+            return True
+        return False
 
     @staticmethod
-    def export_png(scene: QGraphicsScene, parent: QWidget, default_name: str = "diagram.png", dpi_scale: float = 2.0):
-        path, _ = QFileDialog.getSaveFileName(parent, "Exportar Diagrama como PNG", default_name, "Imagen PNG (*.png)")
-        if not path:
-            return
-
+    def export_png_to_file(scene: QGraphicsScene, path: str, dpi_scale: float = 2.0) -> bool:
+        selected_items = list(scene.selectedItems())
+        if selected_items:
+            scene.clearSelection()
+        if hasattr(scene, "prepare_for_export"):
+            scene.prepare_for_export()
         rect = scene.itemsBoundingRect()
+        for item in selected_items:
+            if item.scene() == scene:
+                item.setSelected(True)
+
         if rect.isEmpty():
-            QMessageBox.warning(parent, "Aviso", "El diagrama está vacío.")
-            return
+            return False
 
         pad = 25.0
         rect.adjust(-pad, -pad, pad, pad)
@@ -73,10 +99,37 @@ class DiagramExporter:
         painter.setRenderHint(QPainter.SmoothPixmapTransform)
 
         target_rect = QRectF(0, 0, width, height)
-        scene.render(painter, target_rect, rect)
+        DiagramExporter._render_scene_clean(scene, painter, target_rect, rect)
         painter.end()
 
-        if image.save(path, "PNG"):
+        return image.save(path, "PNG")
+
+    @staticmethod
+    def export_svg(scene: QGraphicsScene, parent: QWidget, default_name: str = "diagram.svg"):
+        path, _ = QFileDialog.getSaveFileName(parent, "Exportar Diagrama como SVG", default_name, "Vector SVG (*.svg)")
+        if not path:
+            return
+
+        if scene.itemsBoundingRect().isEmpty():
+            QMessageBox.warning(parent, "Aviso", "El diagrama está vacío.")
+            return
+
+        if DiagramExporter.export_svg_to_file(scene, path):
+            QMessageBox.information(parent, "Exportado", f"Diagrama SVG exportado exitosamente:\n{path}")
+        else:
+            QMessageBox.critical(parent, "Error", "No se pudo generar el archivo SVG.")
+
+    @staticmethod
+    def export_png(scene: QGraphicsScene, parent: QWidget, default_name: str = "diagram.png", dpi_scale: float = 2.0):
+        path, _ = QFileDialog.getSaveFileName(parent, "Exportar Diagrama como PNG", default_name, "Imagen PNG (*.png)")
+        if not path:
+            return
+
+        if scene.itemsBoundingRect().isEmpty():
+            QMessageBox.warning(parent, "Aviso", "El diagrama está vacío.")
+            return
+
+        if DiagramExporter.export_png_to_file(scene, path, dpi_scale=dpi_scale):
             QMessageBox.information(parent, "Exportado", f"Diagrama PNG de alta resolución guardado en:\n{path}")
         else:
             QMessageBox.critical(parent, "Error", "No se pudo guardar la imagen PNG.")

@@ -262,6 +262,7 @@ class MuxPropertiesDialog(QDialog):
         for i in range(self.spin_num_inputs.value()):
             name = in_pins[i].name if i < len(in_pins) else str(i)
             self._add_row(i, name)
+        self.table_inputs.itemChanged.connect(self._on_input_label_changed)
 
         # Dialog buttons
         btn_box = QHBoxLayout()
@@ -283,6 +284,14 @@ class MuxPropertiesDialog(QDialog):
         self.table_inputs.setItem(row, 0, item_idx)
         self.table_inputs.setItem(row, 1, QTableWidgetItem(name))
 
+    def _on_input_label_changed(self, item=None):
+        names = self.get_input_names()
+        max_len = max((len(n) for n in names), default=1)
+        if max_len > 2:
+            rec_w = int(math.ceil((25.0 + max_len * 8.0) / 20.0) * 20)
+            if self.spin_width.value() < rec_w:
+                self.spin_width.setValue(rec_w)
+
     def _on_num_inputs_changed(self, new_count: int):
         cur_count = self.table_inputs.rowCount()
         if new_count > cur_count:
@@ -293,8 +302,9 @@ class MuxPropertiesDialog(QDialog):
                 self.table_inputs.removeRow(i)
         min_h = max(40, new_count * 15)
         self.spin_height.setMinimum(min_h)
-        if self.spin_height.value() < min_h:
-            self.spin_height.setValue(max(60, new_count * 25))
+        rec_h = 80 if new_count <= 2 else (new_count + 3) * 20
+        if self.spin_height.value() < rec_h:
+            self.spin_height.setValue(rec_h)
 
     def _apply_preset_nums(self):
         for r in range(self.table_inputs.rowCount()):
@@ -1055,6 +1065,12 @@ class RTLEditorWidget(QWidget):
         btn_params_top.setToolTip("Definir o editar parámetros globales del esquemático (ej: DATA_WIDTH=8, N=4)")
         btn_params_top.clicked.connect(self.open_parameters_dialog)
         top_bar.addWidget(btn_params_top)
+
+        self.check_show_pins = QCheckBox("Mostrar pines")
+        self.check_show_pins.setChecked(False)
+        self.check_show_pins.setToolTip("Muestra los círculos de anclaje de pines en el editor (siempre se ocultan al exportar a SVG/PNG)")
+        self.check_show_pins.toggled.connect(self.scene.set_show_pin_circles)
+        top_bar.addWidget(self.check_show_pins)
 
         top_bar.addStretch()
 
